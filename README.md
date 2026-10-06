@@ -1,5 +1,8 @@
 # biz-change-monitor
 
+> **A business data change monitoring and reconciliation automation tool.**
+> Automatically capture business data snapshots, detect changes, and simplify reconciliation workflows.
+
 ![CI](https://github.com/classmateLu/biz-change-monitor/actions/workflows/ci.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)
@@ -27,6 +30,24 @@
 
 纯函数 Diff 检测 5 类变化：`new`（新增）/ `removed`（下架）/ `price_changed`（价格）/ `name_changed`（名称）/ `stores_changed`（适用门店）。
 
+## 效果示例（模拟数据）
+
+```text
+昨日快照                                今日采集
+gid:      DEMO-0001                     gid:      DEMO-0001
+name:     示例项目 0001                  name:     示例项目 0001
+price:    128.00                        price:    109.00
+stores:   Alpha 店、Beta 店             stores:   Alpha 店、Beta 店、Gamma 店
+                    ↓ Diff Engine
+对比 2026-10-05：变化 2 条 {'price_changed': 1, 'stores_changed': 1}
+  [price_changed]  DEMO-0001 示例项目 0001 价格 128.0 → 109.0
+  [stores_changed] DEMO-0001 示例项目 0001 新增门店：Gamma 店；减少门店：无
+```
+
+> 输出格式为程序真实打印样式；示例数据完全虚构。
+
+> 📺 **交互式演示页**：[docs/demo.html](docs/demo.html) —— 快照对照 / 变化事件 / 通知样式的完整可视化（GitHub 上可直接点开查看源码；本地浏览器打开或开启 GitHub Pages 后即为交互页面）
+
 ## 特性
 
 - **纯函数 Diff**：不依赖浏览器/网络/平台 SDK，可独立测试
@@ -39,7 +60,7 @@
 ## 快速开始
 
 ```bash
-git clone https://github.com/<your-username>/biz-change-monitor.git
+git clone https://github.com/classmateLu/biz-change-monitor.git
 cd biz-change-monitor
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
@@ -50,6 +71,8 @@ python tests/test_diff.py
 # 跑一次示例流程（虚构数据，dry-run 模式）
 python main.py
 ```
+
+> 首次运行只建立基线快照，不产出变化事件；之后每天运行，机器只把「变了什么」报给你。
 
 ## 接入你的数据源
 
@@ -73,7 +96,7 @@ class MyAdapter(DataSource):
 
 **去资产化原则**：平台接口地址、参数结构、登录态处理等若涉及公司内部系统或商业平台，请保持在私有环境，不要提交到公共仓库。
 
-## 钉钉同步（可选，默认关闭）
+## 多维表同步（以钉钉为例，可选，默认关闭）
 
 1. 钉钉开放平台创建企业内部应用，获取 AppKey/AppSecret；创建多维表（表A 全量 / 表B 变化）
 2. `cp config/config.example.yaml config/config.yaml` 并填入配置，`chmod 600` 保护
@@ -100,6 +123,19 @@ pytest tests/                       # 或 pytest 一键全部（74 项）
 
 覆盖：新增/删除/价格/名称/门店变化、多字段同变、零误报、数值容错、字段缺失、默认运行零外呼、写入模式安全闸门、严格响应校验、状态损坏 fail-safe、重复 gid 拒绝、基线缺失跳过门店比对。
 
+## 公开仓库 vs 原始生产环境
+
+本项目源自真实业务对账场景，公开版本只保留可复用的通用部分：
+
+| | 本公开仓库 | 原始生产环境 |
+|---|---|---|
+| 数据 | 完全虚构的示例数据 | 私有业务数据 |
+| 凭据 / Cookie / 登录态 | 无 | 私有，永不入库 |
+| Webhook | 示例配置 | 私有 |
+| 用途 | 演示 / 学习 / 复用 | 真实业务流程 |
+
+> 本仓库不包含任何生产凭据、Cookie、Token、Webhook 密钥或真实业务数据。
+
 ## 安全与合规声明
 
 - 本项目是个人技术学习与工程实践作品：核心价值在于展示「以稳定业务 ID 关联、采集→快照→比对→通知」的通用工程实现，不构成任何商业产品或服务，也不针对任何特定平台提供运营支持
@@ -109,12 +145,22 @@ pytest tests/                       # 或 pytest 一键全部（74 项）
 - 不保证任何平台内部接口的长期兼容性
 - Meituan / DingTalk（钉钉）等均为各自权利人的商标，本项目与其无关联
 
-## License
-
-Apache-2.0（见 [LICENSE](LICENSE)）
-
 ## Roadmap
+
+已完成：
+
+- [x] 快照式历史监控（原子写入 + 容错读取）
+- [x] 5 类变化的纯函数 Diff 检测
+- [x] Dry-run 默认 + 写入双重安全闸门
+- [x] 虚构数据示例（克隆即可跑通）
+- [x] 74 项自动化测试
+
+计划中：
 
 - [ ] v0.2：查询机器人框架移植（钉钉 Stream，管理员白名单 + 审计日志）
 - [ ] v0.2：更多通知渠道（飞书 / Telegram / 邮件）
 - [ ] v0.3：SQLite 存储后端可选；Web 查看面板
+
+## License
+
+Apache-2.0（见 [LICENSE](LICENSE)）
