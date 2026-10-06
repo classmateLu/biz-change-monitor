@@ -20,8 +20,9 @@
     → 写入模式被拒绝 → exit 2
 
 幂等与恢复语义（如实声明）：
-    - data/sync_state.json 记录"当天已成功写入"的表（键=表ID，值含日期+数据摘要），
-      原子写入（tmp+replace）；状态文件损坏 → 显式告警并停止自动同步（fail-safe）
+    - data/sync_state.json 记录"当天已成功写入"的表（键=表ID，值含日期+数据摘要，
+      摘要仅用于审计核对，不参与跳过判断），原子写入（tmp+replace）；
+      状态文件损坏 → 显式告警并停止自动同步（fail-safe）
     - 当天重跑自动跳过已成功写入的表；强制重写删除该文件即可
     - 写入成功但标记前崩溃的极端情况仍可能产生一次重复——本系统为
       at-least-once 语义（钉钉接口不支持幂等键），不宣称"恰好一次"
@@ -137,7 +138,10 @@ def mark_synced(sheet_id: str, today: str, digest: str = "") -> None:
 
 
 def _rows_digest(rows: list[dict]) -> str:
-    """本批数据的摘要（绑定"表+日期+内容"，换表/改数据不会误跳过同步）。"""
+    """本批数据的 SHA-256 截断摘要：存入 sync_state 供审计核对。
+
+    当前不参与"是否跳过同步"的判断——跳过逻辑只看 表 ID + 日期。
+    """
     return hashlib.sha256(
         json.dumps(rows, ensure_ascii=False, sort_keys=True).encode("utf-8")
     ).hexdigest()[:16]

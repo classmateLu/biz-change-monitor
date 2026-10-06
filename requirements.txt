@@ -1,8 +1,14 @@
-# 运行示例流程仅需 pyyaml（核心 diff/snapshot/validation 纯标准库）
+# ---------- 运行时依赖 ----------
+# 示例流程仅需 pyyaml（核心 diff/snapshot/validation 纯标准库）
 pyyaml>=6.0
 
-# 可选：接入钉钉长连接问答机器人时
+# ---------- 开发 / 测试依赖 ----------
+# README 中的 `pytest tests/` 一键全量测试需要
+pytest>=7.0
+
+# ---------- 可选依赖 ----------
+# 接入钉钉长连接问答机器人时
 # dingtalk-stream>=0.24
 
-# 可选：你的平台适配器如需浏览器自动化
+# 你的平台适配器如需浏览器自动化
 # playwright>=1.40

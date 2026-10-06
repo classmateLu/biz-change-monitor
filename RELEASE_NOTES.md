@@ -8,7 +8,7 @@
 - **防误报设计**：分页失败拦截、字段缺失不误判、价格数值化容错（"99.0" ≡ 99）、门店比较顺序无关
 - **原子快照**：先写临时文件再替换，中断不留半文件；损坏快照自动跳过取次新
 - **可配置完整性校验**：最小记录数 / 分页失败 / 详情失败比例，任一不过即终止（宁可停摆报警，不写错误数据）
-- **写入幂等**：当天重跑自动跳过，杜绝重复记录
+- **写入幂等**：同日重跑默认跳过已成功写入的表，降低重复写入风险（at-least-once）
 - **数据源可插拔**：实现一个 `DataSource.fetch()` 即接入新平台
 - **钉钉集成（可选）**：多维表分批同步（表A 全量 / 表B 变化）+ 群机器人 Webhook 告警；不配置则 dry-run
 
@@ -19,7 +19,7 @@ git clone https://github.com/YOUR_USER/biz-change-monitor.git
 cd biz-change-monitor
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-python tests/test_diff.py   # 11 项测试
+python tests/test_diff.py   # Diff 引擎 12 项（另有钉钉同步安全 37 项 + 主流程安全 25 项，共 74 项）
 python main.py              # 虚构数据 dry-run，无需任何账号
 ```
 
