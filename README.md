@@ -11,17 +11,9 @@
 
 ## 核心流程
 
-```text
-平台数据源 (adapter)
-    ↓ 归一化 {gid, name, price, ...}
-完整性校验 (validation) ── 失败 → 告警退出，不产生任何写入
-    ↓
-原子快照 (snapshot: JSON)
-    ↓ 与最近有效基线比对
-变化检测 (diff: 纯函数)  → new / removed / price_changed / name_changed / stores_changed
-    ↓
-通知与同步 (钉钉多维表 / Webhook) + 历史查询
-```
+![架构图](docs/architecture.svg)
+
+纯函数 Diff 检测 5 类变化：`new`（新增）/ `removed`（下架）/ `price_changed`（价格）/ `name_changed`（名称）/ `stores_changed`（适用门店）。
 
 ## 特性
 
