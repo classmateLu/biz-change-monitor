@@ -1,0 +1,19 @@
+# ============================================================
+# biz-change-monitor · 配置模板
+# 复制为 config/config.yaml 并填入你的值；真实 config.yaml 与
+# .env 永远不要提交到仓库（已在 .gitignore 排除）。
+# ============================================================
+
+validation:
+  min_records: 50                 # 最小记录数阈值（低于视为采集不完整）
+  max_detail_failure_ratio: 0.05  # 逐对象详情失败比例上限
+
+dingtalk:                          # 可选：不填则运行在 dry-run 模式（只打印不同步）
+  app_key: ""                      # 钉钉开放平台 Client ID
+  app_secret: ""                   # 钉钉开放平台 Client Secret（建议改放 .env）
+  operator_unionid: ""             # 操作者 unionId
+  base_node_id: ""                 # 多维表（智能表格）NODE_ID
+  sheet_a_id: ""                   # 表A：每日全量
+  sheet_b_id: ""                   # 表B：每日变化
+  webhook: ""                      # 群自定义机器人 Webhook（告警/播报）
+  webhook_keyword: ""              # 机器人安全设置里的自定义关键词

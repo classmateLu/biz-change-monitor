@@ -1,0 +1,18 @@
+# 敏感配置（真实密钥永不入库）
+config/config.yaml
+.env
+
+# 运行数据与日志
+data/
+logs/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# 系统
+.DS_Store

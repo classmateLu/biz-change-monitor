@@ -1,0 +1,8 @@
+# 运行示例流程仅需 pyyaml（核心 diff/snapshot/validation 纯标准库）
+pyyaml>=6.0
+
+# 可选：接入钉钉长连接问答机器人时
+# dingtalk-stream>=0.24
+
+# 可选：你的平台适配器如需浏览器自动化
+# playwright>=1.40

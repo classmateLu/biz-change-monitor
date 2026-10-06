@@ -1,0 +1,14 @@
+{
+  "date": "2026-10-04",
+  "total": 3,
+  "items": [
+    {"gid": "DEMO-0001", "name": "示例项目 0001", "price": 128.0, "count": 1, "unit_price": 128.0},
+    {"gid": "DEMO-0002", "name": "示例项目 0002", "price": 259.0, "count": 2, "unit_price": 129.5},
+    {"gid": "DEMO-0003", "name": "示例项目 0003", "price": 99.0, "count": 1, "unit_price": 99.0}
+  ],
+  "stores": {
+    "DEMO-0001": ["Demo Alpha 店", "Demo Beta 店"],
+    "DEMO-0002": ["Demo Gamma 店"],
+    "DEMO-0003": ["Demo Alpha 店", "Demo Delta 店", "Demo Echo 店"]
+  }
+}
