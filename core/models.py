@@ -37,8 +37,19 @@ def make_item(gid, name=None, price=None, count=None, unit_price=None, **extra) 
 
 
 def index_by_id(items: Iterable[dict]) -> dict:
-    """把 item 列表转成 {gid: item} 索引。重复 ID 后者覆盖前者。"""
-    return {str(i["gid"]): i for i in items}
+    """把 item 列表转成 {gid: item} 索引。
+
+    重复 gid → 抛 ValueError（信息含重复 gid）：重复意味着数据源异常，
+    绝不静默覆盖丢失数据（fail-closed）。
+    """
+    index: dict = {}
+    for i in items:
+        gid = str(i["gid"])
+        if gid in index:
+            raise ValueError(
+                f"采集结果存在重复 gid: {gid}（疑似数据源异常，已拒绝建立索引）")
+        index[gid] = i
+    return index
 
 
 def to_number(value):

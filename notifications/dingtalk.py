@@ -108,7 +108,10 @@ def classify_business(data: dict) -> tuple[bool, str]:
 def validate_write_response(data: dict) -> tuple[bool, str]:
     """写入接口的严格成功判定（fail-safe）。
 
-    规则：无业务错误字段 且 响应非空 且 含已知数据键之一（records/id/ids/success）。
+    规则：无业务错误字段 且 响应非空 且 含已知数据键之一，且**值有效**：
+        success       → 必须为真值（False/0/"0"/"false"/空 均为失败）
+        records/ids   → 必须为非空列表
+        id            → 必须非空
     未知响应结构 → 默认失败，并打印响应键名供人工核对（不打印值）。
     """
     biz_ok, why = classify_business(data)
@@ -116,10 +119,25 @@ def validate_write_response(data: dict) -> tuple[bool, str]:
         return False, why
     if not data:
         return False, "空响应，无法确认写入结果"
-    if not any(k in data for k in _WRITE_SUCCESS_KEYS):
-        return False, (f"未知响应结构（键: {sorted(data.keys())}），按失败处理——"
-                       f"请人工核对官方文档后更新 _WRITE_SUCCESS_KEYS")
-    return True, ""
+    if "success" in data:
+        s = data["success"]
+        if s is False or s in (0, "0", "", None) or (
+                isinstance(s, str) and s.strip().lower() in ("false", "0", "no")):
+            return False, f"success 字段指示失败: {s!r}"
+        return True, ""
+    for key in ("records", "ids"):
+        v = data.get(key)
+        if v is not None:
+            if not v:
+                return False, f"响应 {key} 为空，无法确认写入结果"
+            return True, ""
+    if "id" in data:
+        v = data["id"]
+        if v in (None, "", []):
+            return False, "响应 id 为空，无法确认写入结果"
+        return True, ""
+    return False, (f"未知响应结构（键: {sorted(data.keys())}），按失败处理——"
+                   f"请人工核对官方文档后更新 _WRITE_SUCCESS_KEYS")
 
 
 def get_access_token(app_key: str, app_secret: str) -> str:

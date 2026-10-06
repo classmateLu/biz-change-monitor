@@ -54,6 +54,20 @@ def run_checks():
                    "未知结构失败原因含响应键名（供人工核对）"))
     checks.append((dk.validate_write_response({"code": "x"})[0] is False,
                    "含错误 code → 失败"))
+    # success 字段值校验（GPT 三审反例：键存在 ≠ 成功）
+    checks.append((dk.validate_write_response({"success": False})[0] is False,
+                   "success=False → 失败"))
+    checks.append((dk.validate_write_response({"success": 0})[0] is False,
+                   "success=0 → 失败"))
+    checks.append((dk.validate_write_response({"success": "false"})[0] is False,
+                   "success='false' → 失败"))
+    # records/id 空值校验（不能仅凭键存在就判定成功）
+    checks.append((dk.validate_write_response({"records": []})[0] is False,
+                   "records 空列表 → 失败"))
+    checks.append((dk.validate_write_response({"ids": []})[0] is False,
+                   "ids 空列表 → 失败"))
+    checks.append((dk.validate_write_response({"id": ""})[0] is False,
+                   "id 空字符串 → 失败"))
 
     # ---- URL 白名单（防 SSRF/误配）----
     checks.append((dk._url_allowed("https://oapi.dingtalk.com/robot/send?x=1",

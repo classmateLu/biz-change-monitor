@@ -65,6 +65,8 @@ class _Ctx:
         self.webhook_alerts: list[str] = []
         self.original_http = dk._http_json
         self.original_webhook = dk.send_webhook
+        self.original_get_access_token = dk.get_access_token
+        self.original_write_records = dk.write_records
         self.original_adapter = app_main.ExampleAdapter
 
         def counting_http(url, payload=None, token=None, timeout=60):
@@ -91,6 +93,8 @@ class _Ctx:
     def cleanup(self):
         dk._http_json = self.original_http
         dk.send_webhook = self.original_webhook
+        dk.get_access_token = self.original_get_access_token
+        dk.write_records = self.original_write_records
         app_main.ExampleAdapter = self.original_adapter
         app_main.ROOT = self.original_root
         app_main._LOCK_FH = None
@@ -176,6 +180,26 @@ def run_checks():
         checks.append((synced and note == "", "旧格式状态文件兼容读取"))
     finally:
         ctx.cleanup()
+
+    # ---- cleanup 后 monkeypatch 必须完整还原（测试隔离验证） ----
+    checks.append((dk.get_access_token is ctx.original_get_access_token,
+                   "cleanup 后 get_access_token 已还原"))
+    checks.append((dk.write_records is ctx.original_write_records,
+                   "cleanup 后 write_records 已还原"))
+    checks.append((dk._http_json is ctx.original_http,
+                   "cleanup 后 _http_json 已还原"))
+
+    # ---- index_by_id 重复 gid 抛异常（不静默覆盖） ----
+    from core.models import index_by_id as _index_by_id
+    dup = [make_item("1001", name="A"), make_item("1001", name="B")]
+    try:
+        _index_by_id(dup)
+        checks.append((False, "重复 gid 应抛 ValueError"))
+    except ValueError as e:
+        checks.append(("1001" in str(e), "重复 gid 抛 ValueError 且信息含 gid"))
+    single = _index_by_id([make_item("2002", name="C")])
+    checks.append((single.get("2002", {}).get("name") == "C",
+                   "无重复时 index_by_id 行为正常"))
 
     return checks
 
