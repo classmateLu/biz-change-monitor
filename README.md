@@ -46,7 +46,7 @@ stores:   Alpha 店、Beta 店             stores:   Alpha 店、Beta 店、Gamm
 
 > 输出格式为程序真实打印样式；示例数据完全虚构。
 
-> 📺 **交互式演示页**：[docs/demo.html](docs/demo.html) —— 快照对照 / 变化事件 / 通知样式的完整可视化（GitHub 上可直接点开查看源码；本地浏览器打开或开启 GitHub Pages 后即为交互页面）
+> 📺 **交互式演示页**：[在线查看](https://classmatelu.github.io/biz-change-monitor/demo.html) —— 快照对照 / 变化事件 / 通知样式的完整可视化（源文件见 [docs/demo.html](docs/demo.html)）
 
 ## 特性
 
