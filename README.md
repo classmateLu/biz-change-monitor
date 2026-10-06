@@ -26,7 +26,7 @@
 - **原子快照 + 容错读取**：中断不留半文件，损坏文件自动跳过
 - **写入幂等**：同日重跑默认跳过已成功写入的表，降低重复写入风险（at-least-once，详见下文钉钉同步章节）
 - **数据源可插拔**：实现一个 `DataSource.fetch()` 即接入新平台
-- **钉钉集成可选，默认关闭**：`python main.py` 永远是 dry-run（绝不写钉钉）；写入需显式 `--enable-write` 且通过双重校验（严格响应校验，未知结构默认失败）+ 失败 Webhook 告警
+- **钉钉集成可选，默认关闭**：`python main.py` 永远是 dry-run（绝不写多维表、绝不获取 accessToken；仅严重故障会发 Webhook 告警消息）；写入需显式 `--enable-write` 且通过双重校验（严格响应校验，未知结构默认失败）+ 失败 Webhook 告警
 
 ## 快速开始
 
@@ -69,7 +69,7 @@ class MyAdapter(DataSource):
 
 1. 钉钉开放平台创建企业内部应用，获取 AppKey/AppSecret；创建多维表（表A 全量 / 表B 变化）
 2. `cp config/config.example.yaml config/config.yaml` 并填入配置，`chmod 600` 保护
-3. **默认运行是 dry-run**：只采集、快照、比对、打印变化，**绝不写钉钉**——即使配置里已填真实凭据
+3. **默认运行是 dry-run**：只采集、快照、比对、打印变化，**绝不写多维表、绝不获取 accessToken**——即使配置里已填真实凭据（仅严重故障会发 Webhook 告警消息）
 4. 确认无误后，用 `python main.py --enable-write` 显式启用写入：
    - 需同时通过两项校验：数据源非示例适配器（虚构数据禁止写入真实表）+ 钉钉配置齐备，否则拒绝并退出
    - 写入响应做**严格校验**：无错误字段且含已知数据键（records/id/ids/success）才算成功；未知结构默认按失败处理
