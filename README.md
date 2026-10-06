@@ -1,5 +1,9 @@
 # biz-change-monitor
 
+![CI](https://github.com/classmateLu/biz-change-monitor/actions/workflows/ci.yml/badge.svg)
+![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
+![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)
+
 业务对象历史变化监控引擎 —— 以稳定业务 ID 为关联键，持续采集 → 快照 → 历史比对 → 变化事件 → 通知/多维表 → 历史查询。
 
 > 适用场景：任何"ID 稳定、属性会变"的业务对象——商品价格、套餐内容、适用门店、库存状态、SaaS 数据、API 返回值……
@@ -94,6 +98,7 @@ pytest tests/                       # 或 pytest 一键全部（74 项）
 
 ## 安全与合规声明
 
+- 本项目是个人技术学习与工程实践作品：核心价值在于展示「以稳定业务 ID 关联、采集→快照→比对→通知」的通用工程实现，不构成任何商业产品或服务，也不针对任何特定平台提供运营支持
 - 本项目定位为**用户对自己有权访问的数据**做自动化历史管理
 - 使用者需自行确认目标平台的服务条款，遵守适用法律法规
 - 本项目**不提供**绕过登录、权限或安全机制的功能；不内置任何平台专属适配器
