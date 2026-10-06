@@ -35,9 +35,14 @@ class CollectionResult:
 
 
 class DataSource:
-    """数据源接口。子类实现 fetch()。"""
+    """数据源接口。子类实现 fetch()。
+
+    is_example：示例/虚构数据源必须设为 True——主流程在写入模式下
+    会拒绝让示例数据进入真实钉钉表（防误写保护）。
+    """
 
     name = "base"
+    is_example = False
 
     def fetch(self) -> CollectionResult:
         raise NotImplementedError("adapter 必须实现 fetch()")

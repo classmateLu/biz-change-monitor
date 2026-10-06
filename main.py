@@ -3,21 +3,33 @@
 """示例主流程：采集 → 完整性校验 → 快照 → Diff →（可选）钉钉同步。
 
 用法：
-    python main.py                 # 默认用 ExampleAdapter（虚构数据）
-    python main.py --date 2026-10-05   # 指定"今天"的日期标签（默认取系统日期）
+    python main.py                       # 默认安全模式：只采集/快照/比对，绝不写钉钉
+    python main.py --date 2026-10-05     # 指定"今天"的日期标签（默认取系统日期）
+    python main.py --enable-write        # 显式启用钉钉写入（需同时通过两项校验）
+
+写入模式安全闸门（--enable-write 需同时满足，否则拒绝写入并 exit 2）：
+    1. 数据源不是示例适配器（ExampleAdapter 的虚构数据禁止写入真实表）
+    2. 钉钉配置完整（app_key/app_secret/base_node_id/operator_unionid/sheet_a_id/sheet_b_id）
+    仅"配置文件里存在真实凭据"不会触发写入——写入永远需要显式命令行参数。
 
 流程与退出码：
-    采集 → validation 校验（失败 → 告警 + exit 1，不写快照不比对）
-         → 原子快照 → 加载最近有效基线 → diff
-         → 打印变化（配置了钉钉则同步表A/表B，含幂等保护）→ exit 0
+    互斥锁（防并发重复写入）
+    → 采集 → validation 校验（失败 → 告警 + exit 1，不写快照不比对）
+    → 原子快照 → 加载最近有效基线 → diff
+    → dry-run：只打印变化 / write：同步表A/表B（幂等保护）→ exit 0
+    → 写入模式被拒绝 → exit 2
 
-幂等保护：data/sync_state.json 记录"当天已成功写入"的表；
-当天重跑自动跳过写入。需要强制重写时删除该文件即可。
+幂等与恢复语义（如实声明）：
+    - data/sync_state.json 记录"当天已成功写入"的表，原子写入（tmp+replace）
+    - 当天重跑自动跳过已成功写入的表；强制重写删除该文件即可
+    - 写入成功但标记前崩溃的极端情况仍可能产生一次重复——本系统为
+      at-least-once 语义（钉钉接口不支持幂等键），不宣称"恰好一次"
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -32,9 +44,45 @@ from core.validation import validate_collection
 
 ROOT = Path(__file__).resolve().parent
 SYNC_MARK = ROOT / "data" / "sync_state.json"
+_LOCK_FH = None  # 进程内持锁句柄（同进程重复调用不自我阻塞）
 
 
-# ---------- 幂等保护 ----------
+# ---------- 并发保护 ----------
+
+def acquire_lock() -> None:
+    """单实例互斥锁（flock）。已有实例在跑时立即退出，避免并发重复写入。
+
+    fcntl 仅 Unix/macOS 可用；其他平台跳过文件锁（CI 环境/Windows）。
+    """
+    global _LOCK_FH
+    if _LOCK_FH is not None:
+        return
+    lock_path = ROOT / "data" / ".monitor.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        import fcntl
+    except ImportError:
+        return
+    fh = open(lock_path, "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fh.close()
+        print("❌ 检测到另一个实例正在运行（data/.monitor.lock 被占用），"
+              "退出以避免并发重复写入。", flush=True)
+        sys.exit(1)
+    _LOCK_FH = fh
+
+
+# ---------- 幂等保护（原子写入） ----------
+
+def _write_json_atomic(path: Path, payload) -> None:
+    """先写临时文件再 os.replace，中断不会留下半文件。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
 
 def _load_sync_state() -> dict:
     try:
@@ -50,8 +98,27 @@ def already_synced(label: str, today: str) -> bool:
 def mark_synced(label: str, today: str) -> None:
     st = _load_sync_state()
     st[label] = today
-    SYNC_MARK.parent.mkdir(parents=True, exist_ok=True)
-    SYNC_MARK.write_text(json.dumps(st, ensure_ascii=False), encoding="utf-8")
+    _write_json_atomic(SYNC_MARK, st)
+
+
+# ---------- 写入模式安全闸门 ----------
+
+def decide_write_mode(enable_write: bool, adapter, dt_cfg: dict | None) -> tuple[str, str]:
+    """决定本次运行的同步模式。返回 (mode, reason)。
+
+    mode: "dry_run"（默认，绝不写钉钉）| "write"（显式启用且校验通过）
+          | "refuse"（显式启用但校验未通过，必须拒绝）
+    """
+    if not enable_write:
+        return "dry_run", "默认安全模式：未显式启用写入（--enable-write）"
+    if getattr(adapter, "is_example", False):
+        return "refuse", ("写入模式已启用，但当前数据源是示例适配器（虚构数据）——"
+                          "禁止写入真实钉钉表。请接入真实适配器后重试。")
+    if dt_cfg is None:
+        return "refuse", ("写入模式已启用，但钉钉配置不完整"
+                          "（需 app_key/app_secret/base_node_id/operator_unionid/"
+                          "sheet_a_id/sheet_b_id）。")
+    return "write", ""
 
 
 # ---------- 钉钉（可选） ----------
@@ -71,7 +138,14 @@ def dingtalk_sync(dt: dict, today: str, items_index: dict,
     """写表A（当日全量）+ 表B（变化），含幂等与失败告警。"""
     from notifications import dingtalk as dk
 
-    token = dk.get_access_token(dt["app_key"], dt["app_secret"])
+    try:
+        token = dk.get_access_token(dt["app_key"], dt["app_secret"])
+    except RuntimeError as e:
+        print(f"❌ 获取 accessToken 失败，本次不写入（可重试）: {e}", flush=True)
+        if dt.get("webhook"):
+            dk.send_webhook(dt["webhook"], f"【同步异常】获取 accessToken 失败，本次未写入。",
+                            dt.get("webhook_keyword", ""))
+        return
     base, unionid = dt["base_node_id"], dt["operator_unionid"]
 
     def alert(msg: str) -> None:
@@ -117,8 +191,12 @@ def dingtalk_sync(dt: dict, today: str, items_index: dict,
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--date", default=time.strftime("%Y-%m-%d"), help="今日日期标签")
+    ap.add_argument("--enable-write", dest="enable_write", action="store_true",
+                    help="显式启用钉钉写入（默认绝不写入；需通过适配器与配置校验）")
     args = ap.parse_args()
     today = args.date
+
+    acquire_lock()  # 单实例互斥：防并发重复写入
 
     cfg_path = ROOT / "config" / "config.yaml"
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
@@ -167,12 +245,17 @@ def main() -> int:
     if len(changes) > 20:
         print(f"  ……其余 {len(changes) - 20} 条见同步表", flush=True)
 
-    # 5) 钉钉同步（配置齐备才执行，否则 dry-run）
+    # 5) 同步模式裁决（默认安全：dry-run；写入需 --enable-write + 双重校验）
     dt = load_dingtalk_config(cfg)
-    if dt:
+    mode, reason = decide_write_mode(args.enable_write, adapter, dt)
+    if mode == "refuse":
+        print(f"❌ {reason}", flush=True)
+        return 2
+    if mode == "write":
         dingtalk_sync(dt, today, items_index, changes)
     else:
-        print("[dry-run] 未配置钉钉（config/config.yaml），跳过多维表同步。", flush=True)
+        print(f"[dry-run] {reason}；"
+              f"本次检测到 {len(changes)} 条变化，未写入钉钉。", flush=True)
 
     print("DONE", flush=True)
     return 0

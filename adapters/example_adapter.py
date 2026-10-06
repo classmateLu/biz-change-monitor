@@ -18,6 +18,7 @@ class ExampleAdapter(DataSource):
     """虚构数据源。每次实例化用固定种子，保证可复现。"""
 
     name = "example"
+    is_example = True  # 示例适配器标记：写入模式下被主流程拒绝，防误写真实表
 
     def __init__(self, item_count: int = 60, seed: int = 42,
                  # 模拟"运行异常"的开关（默认全关，数据完整）
