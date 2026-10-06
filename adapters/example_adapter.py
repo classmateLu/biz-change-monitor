@@ -40,7 +40,6 @@ class ExampleAdapter(DataSource):
             items.append(make_item(gid, name=f"示例项目 {i:04d}",
                                    price=price, count=count,
                                    unit_price=round(price / count, 2)))
-            self.rng.seed()  # 占位避免 lint
         return items
 
     def fetch(self) -> CollectionResult:

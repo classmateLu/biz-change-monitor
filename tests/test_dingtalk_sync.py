@@ -34,6 +34,42 @@ def run_checks():
                    "errcode=310000 → 业务失败"))
     checks.append((dk.classify_business({"error": "something"})[0] is False,
                    "error 字段非空 → 业务失败"))
+    long_msg = "A" * 500
+    why = dk.classify_business({"code": "x", "message": long_msg})[1]
+    checks.append((len(why) <= 120, f"业务错误信息截断（实际长度 {len(why)}）"))
+
+    # ---- validate_write_response：未知结构默认失败（第二轮整改核心）----
+    checks.append((dk.validate_write_response({"records": [{"id": 1}]})[0] is True,
+                   "含 records 键 → 写入成功"))
+    checks.append((dk.validate_write_response({"id": "abc"})[0] is True,
+                   "含 id 键 → 写入成功"))
+    checks.append((dk.validate_write_response({"success": True})[0] is True,
+                   "含 success 键 → 写入成功"))
+    checks.append((dk.validate_write_response({})[0] is False,
+                   "空 JSON → 未知结构，默认失败"))
+    checks.append((dk.validate_write_response({"weird_field": 1})[0] is False,
+                   "完全未知结构 → 默认失败（fail-safe）"))
+    checks.append(("sorted" in dk.validate_write_response({"weird_field": 1})[1]
+                   or "键" in dk.validate_write_response({"weird_field": 1})[1],
+                   "未知结构失败原因含响应键名（供人工核对）"))
+    checks.append((dk.validate_write_response({"code": "x"})[0] is False,
+                   "含错误 code → 失败"))
+
+    # ---- URL 白名单（防 SSRF/误配）----
+    checks.append((dk._url_allowed("https://oapi.dingtalk.com/robot/send?x=1",
+                                   dk._WEBHOOK_HOSTS)[0] is True,
+                   "Webhook：官方主机允许"))
+    checks.append((dk._url_allowed("http://oapi.dingtalk.com/robot/send",
+                                   dk._WEBHOOK_HOSTS)[0] is False,
+                   "Webhook：非 HTTPS 拒绝"))
+    checks.append((dk._url_allowed("https://evil.example.com/robot",
+                                   dk._WEBHOOK_HOSTS)[0] is False,
+                   "Webhook：第三方主机拒绝"))
+    checks.append((dk._url_allowed("https://127.0.0.1/robot",
+                                   dk._WEBHOOK_HOSTS)[0] is False,
+                   "Webhook：本地/内网地址拒绝"))
+    sw = dk.send_webhook("https://evil.example.com/hook", "test")
+    checks.append((sw["kind"] == "policy_error", "send_webhook 对非法目标返回 policy_error"))
 
     # ---- write_records：HTTP 200 + 业务失败 ≠ 成功 ----
     calls = []

@@ -26,12 +26,12 @@
 - **原子快照 + 容错读取**：中断不留半文件，损坏文件自动跳过
 - **写入幂等**：当天重跑自动跳过，杜绝重复记录
 - **数据源可插拔**：实现一个 `DataSource.fetch()` 即接入新平台
-- **钉钉集成可选**：不配置则 dry-run，配置后自动同步多维表 + Webhook 告警
+- **钉钉集成可选，默认关闭**：`python main.py` 永远是 dry-run（绝不写钉钉）；写入需显式 `--enable-write` 且通过双重校验（严格响应校验，未知结构默认失败）+ 失败 Webhook 告警
 
 ## 快速开始
 
 ```bash
-git clone https://github.com/YOU/biz-change-monitor.git
+git clone https://github.com/<your-username>/biz-change-monitor.git
 cd biz-change-monitor
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
@@ -65,11 +65,17 @@ class MyAdapter(DataSource):
 
 **去资产化原则**：平台接口地址、参数结构、登录态处理等若涉及公司内部系统或商业平台，请保持在私有环境，不要提交到公共仓库。
 
-## 钉钉同步（可选）
+## 钉钉同步（可选，默认关闭）
 
 1. 钉钉开放平台创建企业内部应用，获取 AppKey/AppSecret；创建多维表（表A 全量 / 表B 变化）
-2. `cp config/config.example.yaml config/config.yaml` 并填入配置（或使用 `.env`）
-3. 配置不齐时自动 dry-run；配置齐备后每次运行同步表A/表B（50 行/批、幂等保护、失败 Webhook 告警）
+2. `cp config/config.example.yaml config/config.yaml` 并填入配置，`chmod 600` 保护
+3. **默认运行是 dry-run**：只采集、快照、比对、打印变化，**绝不写钉钉**——即使配置里已填真实凭据
+4. 确认无误后，用 `python main.py --enable-write` 显式启用写入：
+   - 需同时通过两项校验：数据源非示例适配器（虚构数据禁止写入真实表）+ 钉钉配置齐备，否则拒绝并退出
+   - 写入响应做**严格校验**：无错误字段且含已知数据键（records/id/ids/success）才算成功；未知结构默认按失败处理
+   - 首次真实写入若提示"未知响应结构"，按打印的响应键人工核对官方文档后更新 `notifications/dingtalk.py` 的 `_WRITE_SUCCESS_KEYS`
+   - 50 行/批、幂等保护（按表 ID+日期+数据摘要去重）、失败 Webhook 告警、失败退出码非零
+   - 同步语义为 **at-least-once**：极端情况下（写入成功但标记前崩溃）同一批次可能重复一次
 
 ## 定时运行
 

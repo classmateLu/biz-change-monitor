@@ -20,16 +20,20 @@
     → 写入模式被拒绝 → exit 2
 
 幂等与恢复语义（如实声明）：
-    - data/sync_state.json 记录"当天已成功写入"的表，原子写入（tmp+replace）
+    - data/sync_state.json 记录"当天已成功写入"的表（键=表ID，值含日期+数据摘要），
+      原子写入（tmp+replace）；状态文件损坏 → 显式告警并停止自动同步（fail-safe）
     - 当天重跑自动跳过已成功写入的表；强制重写删除该文件即可
     - 写入成功但标记前崩溃的极端情况仍可能产生一次重复——本系统为
       at-least-once 语义（钉钉接口不支持幂等键），不宣称"恰好一次"
+    - 写入响应做严格校验：未知结构默认按失败处理（宁可拒绝重试，不静默丢数据）
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -43,8 +47,12 @@ from core.snapshot import load_latest_snapshot, save_snapshot
 from core.validation import validate_collection
 
 ROOT = Path(__file__).resolve().parent
-SYNC_MARK = ROOT / "data" / "sync_state.json"
 _LOCK_FH = None  # 进程内持锁句柄（同进程重复调用不自我阻塞）
+
+
+def _sync_mark_path() -> Path:
+    """运行时解析（而非模块级固定），便于测试隔离到临时目录。"""
+    return ROOT / "data" / "sync_state.json"
 
 
 # ---------- 并发保护 ----------
@@ -74,7 +82,7 @@ def acquire_lock() -> None:
     _LOCK_FH = fh
 
 
-# ---------- 幂等保护（原子写入） ----------
+# ---------- 幂等保护（原子写入 + 状态损坏 fail-safe） ----------
 
 def _write_json_atomic(path: Path, payload) -> None:
     """先写临时文件再 os.replace，中断不会留下半文件。"""
@@ -84,21 +92,55 @@ def _write_json_atomic(path: Path, payload) -> None:
     os.replace(tmp, path)
 
 
-def _load_sync_state() -> dict:
+def _load_sync_state() -> tuple[dict, bool, str]:
+    """读取同步状态。返回 (state, healthy, reason)。
+
+    状态损坏/非法 → healthy=False（调用方必须停止自动写入，防重复），
+    绝不静默当作空状态。
+    """
+    path = _sync_mark_path()
+    if not path.exists():
+        return {}, True, ""
     try:
-        return json.loads(SYNC_MARK.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("顶层不是 JSON 对象")
+        return data, True, ""
+    except Exception as e:
+        return {}, False, f"同步状态文件损坏（{type(e).__name__}: {e}）"
 
 
-def already_synced(label: str, today: str) -> bool:
-    return _load_sync_state().get(label) == today
+def already_synced(sheet_id: str, today: str) -> tuple[bool, str]:
+    """查询某表当天是否已成功写入。返回 (synced, note)。
+
+    新格式：{sheet_id: {"date": ..., "digest": ...}}；
+    兼容旧格式：{label: "YYYY-MM-DD"}。
+    """
+    st, healthy, why = _load_sync_state()
+    if not healthy:
+        return False, why
+    entry = st.get(sheet_id)
+    if isinstance(entry, dict):
+        return entry.get("date") == today, ""
+    if isinstance(entry, str):  # 旧格式兼容
+        return entry == today, ""
+    return False, ""
 
 
-def mark_synced(label: str, today: str) -> None:
-    st = _load_sync_state()
-    st[label] = today
-    _write_json_atomic(SYNC_MARK, st)
+def mark_synced(sheet_id: str, today: str, digest: str = "") -> None:
+    st, healthy, _ = _load_sync_state()
+    if not healthy:
+        # 状态损坏时绝不写入新标记——保持损坏现场等人工处理
+        return
+    st[sheet_id] = {"date": today, "digest": digest}
+    _write_json_atomic(_sync_mark_path(), st)
+
+
+def _rows_digest(rows: list[dict]) -> str:
+    """本批数据的摘要（绑定"表+日期+内容"，换表/改数据不会误跳过同步）。"""
+    return hashlib.sha256(
+        json.dumps(rows, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:16]
 
 
 # ---------- 写入模式安全闸门 ----------
@@ -134,18 +176,33 @@ def load_dingtalk_config(cfg: dict) -> dict | None:
 
 
 def dingtalk_sync(dt: dict, today: str, items_index: dict,
-                  changes: list[dict]) -> None:
-    """写表A（当日全量）+ 表B（变化），含幂等与失败告警。"""
+                  changes: list[dict]) -> bool:
+    """写表A（当日全量）+ 表B（变化），含幂等与失败告警。
+
+    返回 True=全部写入成功；False=存在未成功项（调用方应以非零码退出，
+    已成功的表受幂等保护不会被重复写入）。
+    """
     from notifications import dingtalk as dk
+
+    # 状态文件健康检查：损坏 → 停止自动同步（fail-safe，防重复写入）
+    _, healthy, why = _load_sync_state()
+    if not healthy:
+        msg = (f"【同步已停止】{why}。"
+               f"请人工检查 {_sync_mark_path()}（删除后重跑可能重复写入当日数据）。")
+        print(f"❌ {msg}", flush=True)
+        if dt.get("webhook"):
+            dk.send_webhook(dt["webhook"], msg, dt.get("webhook_keyword", ""))
+        return False
 
     try:
         token = dk.get_access_token(dt["app_key"], dt["app_secret"])
     except RuntimeError as e:
         print(f"❌ 获取 accessToken 失败，本次不写入（可重试）: {e}", flush=True)
         if dt.get("webhook"):
-            dk.send_webhook(dt["webhook"], f"【同步异常】获取 accessToken 失败，本次未写入。",
+            dk.send_webhook(dt["webhook"], "【同步异常】获取 accessToken 失败，本次未写入。",
                             dt.get("webhook_keyword", ""))
-        return
+        return False
+
     base, unionid = dt["base_node_id"], dt["operator_unionid"]
 
     def alert(msg: str) -> None:
@@ -153,37 +210,45 @@ def dingtalk_sync(dt: dict, today: str, items_index: dict,
             dk.send_webhook(dt["webhook"], msg, dt.get("webhook_keyword", ""))
         print(f"[告警] {msg}", flush=True)
 
+    all_ok = True
+
     # 表A：当日全量
-    if already_synced("sheet_a", today):
+    rows_a = [{"fields": {
+        "日期": today, "ID": it["gid"], "名称": it.get("name") or "",
+        "价格": it.get("price"), "份数": it.get("count"),
+        "单价": it.get("unit_price")}} for it in items_index.values()]
+    synced_a, _ = already_synced(dt["sheet_a_id"], today)
+    if synced_a:
         print("表A今日已成功写入，跳过（幂等保护）", flush=True)
     else:
-        rows = [{"fields": {
-            "日期": today, "ID": it["gid"], "名称": it.get("name") or "",
-            "价格": it.get("price"), "份数": it.get("count"),
-            "单价": it.get("unit_price")}} for it in items_index.values()]
-        ok, fail = dk.write_records(base, dt["sheet_a_id"], unionid, token, rows,
+        ok, fail = dk.write_records(base, dt["sheet_a_id"], unionid, token, rows_a,
                                     on_error=alert)
         if ok and not fail:
-            mark_synced("sheet_a", today)
+            mark_synced(dt["sheet_a_id"], today, _rows_digest(rows_a))
+        else:
+            all_ok = False
 
     # 表B：变化（无变化写占位行，证明系统在跑）
-    if already_synced("sheet_b", today):
+    rows_b = [{"fields": {
+        "变化日期": c["date"], "ID": c["gid"], "名称": c.get("name") or "",
+        "变化类型": c["type"], "旧值": str(c.get("old_value", "")),
+        "新值": str(c.get("new_value", "")), "差异说明": c["note"]}}
+        for c in changes] if changes else [
+        {"fields": {"变化日期": today, "ID": "—", "名称": "—",
+                    "变化类型": "无变化", "旧值": "", "新值": "",
+                    "差异说明": "今日无变化"}}]
+    synced_b, _ = already_synced(dt["sheet_b_id"], today)
+    if synced_b:
         print("表B今日已成功写入，跳过（幂等保护）", flush=True)
-        return
-    if changes:
-        rows = [{"fields": {
-            "变化日期": c["date"], "ID": c["gid"], "名称": c.get("name") or "",
-            "变化类型": c["type"], "旧值": str(c.get("old_value", "")),
-            "新值": str(c.get("new_value", "")), "差异说明": c["note"]}}
-            for c in changes]
     else:
-        rows = [{"fields": {"变化日期": today, "ID": "—", "名称": "—",
-                            "变化类型": "无变化", "旧值": "", "新值": "",
-                            "差异说明": "今日无变化"}}]
-    ok, fail = dk.write_records(base, dt["sheet_b_id"], unionid, token, rows,
-                                on_error=alert)
-    if ok and not fail:
-        mark_synced("sheet_b", today)
+        ok, fail = dk.write_records(base, dt["sheet_b_id"], unionid, token, rows_b,
+                                    on_error=alert)
+        if ok and not fail:
+            mark_synced(dt["sheet_b_id"], today, _rows_digest(rows_b))
+        else:
+            all_ok = False
+
+    return all_ok
 
 
 # ---------- 主流程 ----------
@@ -195,6 +260,16 @@ def main() -> int:
                     help="显式启用钉钉写入（默认绝不写入；需通过适配器与配置校验）")
     args = ap.parse_args()
     today = args.date
+
+    # --date 严格校验：只允许合法 YYYY-MM-DD，防路径注入/意外覆盖
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", today):
+        print("❌ --date 必须为 YYYY-MM-DD 格式（纯数字）。", flush=True)
+        return 2
+    try:
+        time.strptime(today, "%Y-%m-%d")
+    except ValueError:
+        print(f"❌ --date 不是合法日期: {today}", flush=True)
+        return 2
 
     acquire_lock()  # 单实例互斥：防并发重复写入
 
@@ -252,7 +327,10 @@ def main() -> int:
         print(f"❌ {reason}", flush=True)
         return 2
     if mode == "write":
-        dingtalk_sync(dt, today, items_index, changes)
+        if not dingtalk_sync(dt, today, items_index, changes):
+            print("❌ 同步存在未成功项，本次以失败退出（退出码 1）。"
+                  "已成功的表受幂等保护，重试不会被重复写入。", flush=True)
+            return 1
     else:
         print(f"[dry-run] {reason}；"
               f"本次检测到 {len(changes)} 条变化，未写入钉钉。", flush=True)
