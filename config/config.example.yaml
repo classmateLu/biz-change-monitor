@@ -10,7 +10,7 @@ validation:
 
 dingtalk:                          # 可选：不填则运行在 dry-run 模式（只打印不同步）
   app_key: ""                      # 钉钉开放平台 Client ID
-  app_secret: ""                   # 钉钉开放平台 Client Secret（建议改放 .env）
+  app_secret: ""                   # 钉钉开放平台 Client Secret（v0.1 从本文件读取，勿提交）
   operator_unionid: ""             # 操作者 unionId
   base_node_id: ""                 # 多维表（智能表格）NODE_ID
   sheet_a_id: ""                   # 表A：每日全量

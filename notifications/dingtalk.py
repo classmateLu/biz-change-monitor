@@ -110,7 +110,7 @@ def validate_write_response(data: dict) -> tuple[bool, str]:
 
     规则：无业务错误字段 且 响应非空 且 含已知数据键之一，且**值有效**：
         success       → 必须为真值（False/0/"0"/"false"/空 均为失败）
-        records/ids   → 必须为非空列表
+        records/ids   → 必须为非空值
         id            → 必须非空
     未知响应结构 → 默认失败，并打印响应键名供人工核对（不打印值）。
     """

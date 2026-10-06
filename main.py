@@ -333,7 +333,7 @@ def main() -> int:
     if mode == "write":
         if not dingtalk_sync(dt, today, items_index, changes):
             print("❌ 同步存在未成功项，本次以失败退出（退出码 1）。"
-                  "已成功的表受幂等保护，重试不会被重复写入。", flush=True)
+                  "已成功写入的表下次重试默认跳过（at-least-once，见 README）。", flush=True)
             return 1
     else:
         print(f"[dry-run] {reason}；"
