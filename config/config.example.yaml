@@ -7,6 +7,9 @@
 validation:
   min_records: 50                 # 最小记录数阈值（低于视为采集不完整）
   max_detail_failure_ratio: 0.05  # 逐对象详情失败比例上限
+  # required_fields: ["gid", "name", "price"]  # 必需字段（终审 P0-2）：
+  #   key 不存在/None = 数据读取异常 → 本轮拒绝发布为完整状态；
+  #   空串/0 是合法值。缺省为 gid/name/price，一般无需修改。
 
 engine:                            # v2 数据引擎（阶段2 新增）
   archive_interval_minutes: 60     # 归档快照间隔（分钟）；仅完整运行产生归档

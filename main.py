@@ -13,9 +13,10 @@
     仅"配置文件里存在真实凭据"不会触发写入——写入永远需要显式命令行参数。
 
 流程与退出码：
-    互斥锁（防并发重复写入）
-    → 采集 → validation 校验（失败 → 告警 + exit 1，不写快照不比对）
-    → 原子快照 → 加载最近有效基线 → diff
+    互斥锁（防并发重复写入）+ pending 运行恢复扫描
+    → 采集 → validation 校验 + 必需字段结构校验（失败 → 告警 + exit 1，不比对不同步）
+    → 取基线 → diff（内存）→ 事件落盘（先于 latest，P0-1 一致性保证）
+    → 原子快照 → 更新 latest → 归档
     → dry-run：只打印变化 / write：同步表A/表B（幂等保护）→ exit 0
     → 写入模式被拒绝 → exit 2
 
@@ -46,8 +47,8 @@ import yaml
 from adapters.example_adapter import ExampleAdapter
 from core.diff import diff_changes, summarize
 from core.events import append_events
-from core.models import index_by_id
-from core.runlog import append_run_record
+from core.models import check_required_fields, index_by_id
+from core.runlog import append_run_record, recover_pending_runs
 from core.snapshot import (archive_if_due, load_latest_valid, save_run_snapshot,
                            update_latest)
 from core.validation import validate_collection
@@ -282,6 +283,10 @@ def main() -> int:
 
     acquire_lock()  # 单实例互斥：防并发重复写入
 
+    # P0-1 崩溃恢复：识别上一轮异常中断的 pending 运行（只告警，不修数据——
+    # 提交顺序保证事件先于 latest 落盘 + event_id 幂等，重放天然安全）
+    recover_pending_runs(ROOT)
+
     cfg_path = ROOT / "config" / "config.yaml"
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
     val_cfg = (cfg or {}).get("validation") or {}
@@ -304,6 +309,15 @@ def main() -> int:
         structure_errors.append(str(e))
         items_index = {}
 
+    # P0-2 必需字段结构校验：意外缺失 = 数据读取异常 → 结构错误 → 闸门拒绝，
+    # 绝不允许"必需字段静默缺失"的运行被发布为完整状态（空串/0 仍为合法值）
+    required_fields = val_cfg.get("required_fields")  # 可配置，缺省用引擎默认
+    if required_fields:
+        structure_errors.extend(
+            check_required_fields(result.items, required=tuple(required_fields)))
+    else:
+        structure_errors.extend(check_required_fields(result.items))
+
     # 2) 完整性校验（两道闸门之第一道）：失败 → 留运行记录+留证快照，不比对不同步
     ok, reason = validate_collection(
         len(result.items),
@@ -319,6 +333,7 @@ def main() -> int:
         "run_id": run_id,
         "started_at": started_at,
         "finished_at": None,
+        "status": "pending",  # P0-1 状态机：pending → committed / failed
         "observed_at": observed_at,
         "complete": bool(ok),
         "expected_count": result.total,
@@ -332,6 +347,7 @@ def main() -> int:
 
     if not ok:
         run_record["finished_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+        run_record["status"] = "failed"
         append_run_record(ROOT, run_record)
         # 失败也留证：complete=false 的运行快照（绝不进入基线/latest）
         save_run_snapshot(ROOT, run_id, observed_at, complete=False,
@@ -351,7 +367,36 @@ def main() -> int:
     # 3) 先取上一份有效完整基线（必须在写入本轮快照/latest 之前）
     base_run_id, base_payload = load_latest_valid(ROOT, exclude_run_id=run_id)
 
-    # 4) 保存本轮完整快照（留证）→ 更新 latest → 归档（间隔可配置）
+    # 4) Diff（两道闸门之第二道：只有完整快照才进入比对）——纯内存计算，
+    #    不依赖 latest 是否已更新，因此可以安全地先于一切持久化执行
+    changes: list[dict] = []
+    if base_payload is None:
+        print("无历史基线（首次运行），本次仅建快照，不产出变化事件。", flush=True)
+    else:
+        old_items = index_by_id(base_payload["items"])
+        changes = diff_changes(old_items, items_index,
+                               base_payload.get("stores"), result.stores,
+                               date=today, run_id=run_id, observed_at=observed_at,
+                               previous_observed_at=base_payload.get("observed_at"))
+        counts = summarize(changes)
+        print(f"对比基线 {base_run_id}（观测于 {base_payload.get('observed_at')}）："
+              f"变化 {len(changes)} 条 {counts}", flush=True)
+        for c in changes[:20]:
+            print(f"  [{c['type']}] {c['gid']} {c.get('name') or ''} {c['note']}", flush=True)
+        if len(changes) > 20:
+            print(f"  ……其余 {len(changes) - 20} 条见同步表", flush=True)
+
+    # 5) 变化事件先落盘（P0-1 核心修复：事件持久化必须先于 latest 更新）。
+    #    崩溃窗口分析（终审 P0-1）：
+    #    - 此处之后、latest 更新前崩溃 → 下轮以旧 latest 为基线重新比对，
+    #      同样变化再次发现，append_events 按 event_id 幂等去重 → 无漏报无重复
+    #    - latest 更新后崩溃 → 本轮事件已持久化（顺序保证），一致性成立
+    #    ⇒ 不存在"latest 已更新但事件缺失"的中间态（历史漏报根因已消除）
+    if changes:
+        appended, skipped = append_events(ROOT, changes, today=today)
+        print(f"事件落盘: 新增 {appended}，去重跳过 {skipped}", flush=True)
+
+    # 6) 保存本轮完整快照（留证）→ 更新 latest → 归档（间隔可配置）
     save_run_snapshot(ROOT, run_id, observed_at, complete=True,
                       items=result.items, stores=result.stores,
                       total=result.total, expected_count=result.total,
@@ -372,38 +417,19 @@ def main() -> int:
     if arch:
         print(f"归档快照: {arch.name}", flush=True)
 
-    # 5) Diff（两道闸门之第二道：只有完整快照才进入比对）
-    changes: list[dict] = []
-    if base_payload is None:
-        print("无历史基线（首次运行），本次仅建快照，不产出变化事件。", flush=True)
-    else:
-        old_items = index_by_id(base_payload["items"])
-        changes = diff_changes(old_items, items_index,
-                               base_payload.get("stores"), result.stores,
-                               date=today, run_id=run_id, observed_at=observed_at,
-                               previous_observed_at=base_payload.get("observed_at"))
-        counts = summarize(changes)
-        print(f"对比基线 {base_run_id}（观测于 {base_payload.get('observed_at')}）："
-              f"变化 {len(changes)} 条 {counts}", flush=True)
-        for c in changes[:20]:
-            print(f"  [{c['type']}] {c['gid']} {c.get('name') or ''} {c['note']}", flush=True)
-        if len(changes) > 20:
-            print(f"  ……其余 {len(changes) - 20} 条见同步表", flush=True)
-        # 变化事件落盘（event_id 幂等：同轮重试不重复）
-        appended, skipped = append_events(ROOT, changes, today=today)
-        print(f"事件落盘: 新增 {appended}，去重跳过 {skipped}", flush=True)
-
-    # 6) 同步模式裁决（默认安全：dry-run；写入需 --enable-write + 双重校验）
+    # 7) 同步模式裁决（默认安全：dry-run；写入需 --enable-write + 双重校验）
     dt = load_dingtalk_config(cfg)
     mode, reason = decide_write_mode(args.enable_write, adapter, dt)
     if mode == "refuse":
         run_record["finished_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+        run_record["status"] = "failed"
         append_run_record(ROOT, run_record)
         print(f"❌ {reason}", flush=True)
         return 2
     if mode == "write":
         if not dingtalk_sync(dt, today, items_index, changes):
             run_record["finished_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+            run_record["status"] = "failed"
             append_run_record(ROOT, run_record)
             print("❌ 同步存在未成功项，本次以失败退出（退出码 1）。"
                   "已成功写入的表下次重试默认跳过（at-least-once，见 README）。", flush=True)
@@ -413,6 +439,7 @@ def main() -> int:
               f"本次检测到 {len(changes)} 条变化，未写入钉钉。", flush=True)
 
     run_record["finished_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+    run_record["status"] = "committed"  # 事件落盘+latest 更新+归档全部完成
     append_run_record(ROOT, run_record)
     print("DONE", flush=True)
     return 0

@@ -22,7 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.diff import diff_changes, summarize  # noqa: E402
 from core.events import append_events, load_events  # noqa: E402
-from core.models import canon_number, make_item  # noqa: E402
+from core.models import (canon_number, check_required_fields,  # noqa: E402
+                         make_item)
 from core.runlog import append_run_record, load_run_records  # noqa: E402
 from core.snapshot import (archive_if_due, load_latest_valid,  # noqa: E402
                            save_run_snapshot, update_latest)
@@ -224,6 +225,124 @@ def run_checks():
         rid, payload = load_latest_valid(tmp)
         checks.append((rid == "run-A" and payload.get("complete") is True,
                        "E 重启后基线读取正常"))
+
+        # ================= F. 必需字段结构校验（终审 P0-2） =================
+        # F1: 正常变化不受影响——价格 10 → 12 仍被检出
+        ch = diff_changes({"A": make_item("A", name="X", price=10)},
+                          {"A": make_item("A", name="X", price=12)},
+                          None, None, date="T")
+        checks.append((any(c["type"] == "price_changed" and c["new_value"] == 12
+                           for c in ch), "F 价格 10→12 正常检出（规则不误伤真实变化）"))
+
+        # F2: 新快照意外缺 price → 结构错误（拒绝发布为完整状态）
+        errs = check_required_fields([make_item("A", name="X", price=None)])
+        checks.append((len(errs) == 1 and "price" in errs[0],
+                       "F 新快照意外缺 price → 结构错误"))
+
+        # F3: 旧快照缺 price、新快照有 price → 旧轮次同样会被闸门拦截；
+        #     diff 层保持对称跳过（缺失≠变化），但缺必需字段的轮次到不了 diff
+        errs = check_required_fields([make_item("A", name="X", price=None)])
+        ch = diff_changes({"A": make_item("A", name="X", price=None)},
+                          {"A": make_item("A", name="X", price=12)},
+                          None, None, date="T")
+        checks.append((len(errs) == 1 and not any(c["type"] == "price_changed"
+                                                  for c in ch),
+                       "F 旧缺新有：结构校验拦截 + diff 对称跳过双保险"))
+
+        # F4: 合法空值与零值——空串/0 都不是结构错误
+        errs = check_required_fields([make_item("A", name="", price=0)])
+        checks.append((len(errs) == 0, "F 空串与 0 是合法值，不报结构错误"))
+
+        # F5: 可选字段缺失不造成无意义失败
+        errs = check_required_fields([make_item("A", name="X", price=10)])
+        checks.append((len(errs) == 0, "F 可选字段（discount/status等）缺失不报错"))
+
+        # F6: 必需字段缺失 → validate_collection 拒绝发布为完整状态
+        errs = check_required_fields([make_item("A", name="X", price=None),
+                                      make_item("B", name="Y", price=1)])
+        ok, why = validate_collection(2, min_records=1, structure_errors=errs)
+        checks.append((not ok and "必需字段" in why,
+                       "F 必需字段缺失 → 完整性闸门拒绝本轮"))
+
+        # F7: 结构错误明细有截断（500 条全缺不刷屏）
+        many = [make_item(f"G{i}", name="X", price=None) for i in range(500)]
+        errs = check_required_fields(many)
+        checks.append((len(errs) <= 11 and any("共 500" in e for e in errs),
+                       "F 错误明细截断 + 总数摘要"))
+
+        # ================= G. 字段级数值精度（终审 P1-1） =================
+        # G1: 货币 0.01 档——形态差异不误报
+        checks.append((canon_number("10.001", field="price")
+                       == canon_number("10.004", field="price"),
+                       "G price 0.01 档：10.001/10.004 等价（无过度敏感）"))
+        # G2: 货币真实变化仍检出
+        checks.append((canon_number(10, field="price") != canon_number(12, field="price"),
+                       "G price 10→12 检出（无过度舍入漏报）"))
+        # G3: 折扣 0.001 档——12.5 vs 12.6（统一 0.01 会分别舍成 12.50/12.60 仍检出；
+        #     但 12.5004 vs 12.5006 会被 0.01 舍成同值而漏报，0.001 档修复此问题）
+        checks.append((canon_number("12.5001", field="discount")
+                       == canon_number("12.5004", field="discount"),
+                       "G discount 0.001 档：亚毫差异等价"))
+        checks.append((canon_number("12.5001", field="discount")
+                       != canon_number("12.5009", field="discount"),
+                       "G discount 0.001 档：真实微差检出（0.01 档会漏报）"))
+        # G4: 数量不量化——"2"/2/2.0 等价（形态归一），2.5→2.6 检出（精度保留）
+        checks.append((canon_number(2, field="count") == canon_number("2.0", field="count")
+                       == canon_number("2", field="count"),
+                       "G count 2/'2.0'/'2' 等价（不量化仍消形态差异）"))
+        checks.append((canon_number(2.5, field="count") != canon_number(2.6, field="count"),
+                       "G count 2.5→2.6 检出（整数档量化会漏报，已修复）"))
+        # G5: 未传 field 默认 0.01（向后兼容 v2 初版行为）
+        checks.append((canon_number("10.0") == canon_number(10),
+                       "G canon_number 不传 field 默认 0.01（向后兼容）"))
+        # G6: diff 端到端——count 精度保留进比对
+        ch = diff_changes({"A": make_item("A", name="X", count=2.5)},
+                          {"A": make_item("A", name="X", count=2.6)},
+                          None, None, date="T")
+        checks.append((any(c["type"] == "count_changed" for c in ch),
+                       "G diff 端到端：count 小数变化检出"))
+
+        # ================= H. 并发保护（终审 P1-3） =================
+        # H1: flock 互斥机制有效性——子进程持锁，同文件再次 LOCK_NB 必须失败
+        try:
+            import subprocess
+            lock_file = tmp / "concurrency.lock"
+            holder = subprocess.Popen(
+                [sys.executable, "-c",
+                 "import fcntl,sys,time\n"
+                 "f=open(sys.argv[1],'w')\n"
+                 "fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)\n"
+                 "print('locked',flush=True)\n"
+                 "time.sleep(15)\n"
+                 "fcntl.flock(f,fcntl.LOCK_UN)\n",
+                 str(lock_file)],
+                stdout=subprocess.PIPE, text=True)
+            line = holder.stdout.readline().strip()
+            got_lock = (line == "locked")
+            second_denied = False
+            if got_lock:
+                fh2 = open(lock_file, "w")
+                try:
+                    import fcntl
+                    fcntl.flock(fh2, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(fh2, fcntl.LOCK_UN)
+                except BlockingIOError:
+                    second_denied = True
+                finally:
+                    fh2.close()
+            holder.terminate()
+            holder.wait(timeout=5)
+            checks.append((got_lock and second_denied,
+                           "H flock 互斥有效：持锁期间第二次 LOCK_NB 被拒绝"))
+        except Exception as e:  # 平台不支持 fcntl 等环境：跳过不失败
+            checks.append((True, f"H flock 测试环境不支持，跳过（{type(e).__name__}）"))
+
+        # H2: 静态断言 main() 确实调用了 acquire_lock（防回归移除）
+        main_src = (Path(__file__).resolve().parent.parent / "main.py").read_text(
+            encoding="utf-8")
+        main_body = main_src.split("def main()", 1)[-1]
+        checks.append(("acquire_lock()" in main_body,
+                       "H main() 入口调用 acquire_lock（静态断言防回归）"))
     finally:
         import shutil
         shutil.rmtree(tmp, ignore_errors=True)

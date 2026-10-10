@@ -44,6 +44,15 @@ def append_run_record(root, record: dict) -> Path:
 
     path = runlog_dir(root) / f"runlog-{month}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
+    # 崩溃残留半行隔离（同 core/events.py 的 I4 修复）：防新记录拼接到半行上
+    if path.exists() and path.stat().st_size > 0:
+        with path.open("rb") as fh:
+            fh.seek(-1, 2)
+            if fh.read(1) != b"\n":
+                with path.open("a", encoding="utf-8") as fh2:
+                    fh2.write("\n")
+                print(f"⚠️ 检测到未写完的半行（疑似崩溃残留），已补换行隔离: {path.name}",
+                      flush=True)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
     return path
@@ -65,3 +74,35 @@ def load_run_records(root, month: str) -> list[dict]:
             except ValueError:
                 continue
     return out
+
+
+def recover_pending_runs(root, now=None) -> list[str]:
+    """识别未正常收尾的运行（P0-1 终审补充：崩溃恢复）。
+
+    状态机语义（每 run_id 以 JSONL 中最后一条记录的 status 为准）：
+        pending    提交流程开始时写入
+        committed  提交流程全部完成（事件落盘+latest 更新+归档）后写入
+        failed     校验失败/同步拒绝/同步失败等受控退出
+
+    提交流程保证「事件先于 latest 落盘」+ event_id 幂等，因此 pending 运行
+    无需数据修复：下一轮以旧基线重新比对，同样变化再次发现时被幂等吸收——
+    无漏报、无重复。本函数只负责**识别与告警**，供人工知晓中断区间。
+    返回 pending 的 run_id 列表。
+    """
+    if now is None:
+        from datetime import datetime
+        now = datetime.now().astimezone()
+    month = now.strftime("%Y%m")
+    records = load_run_records(root, month)
+    last_status: dict[str, str] = {}
+    for r in records:
+        rid, st = r.get("run_id"), r.get("status")
+        if rid and st:
+            last_status[rid] = st
+    pending = [rid for rid, st in last_status.items() if st == "pending"]
+    if pending:
+        shown = ", ".join(pending[:5]) + ("…" if len(pending) > 5 else "")
+        print(f"⚠️ 检测到 {len(pending)} 轮未正常收尾的运行: {shown}", flush=True)
+        print("   提交流程保证事件先于 latest 落盘（event_id 幂等吸收重放），"
+              "本轮将以旧基线重新比对，无漏报/重复风险。", flush=True)
+    return pending

@@ -134,10 +134,15 @@ def load_latest_valid(root, exclude_run_id: str | None = None):
     if latest_path.exists():
         try:
             payload = json.loads(latest_path.read_text(encoding="utf-8"))
-            if (isinstance(payload, dict) and payload.get("complete")
+            if (isinstance(payload, dict)
+                    and payload.get("schema") == _RUN_SNAPSHOT_SCHEMA  # P1-2 契约校验
+                    and payload.get("complete")
                     and payload.get("items")
                     and payload.get("run_id") != exclude_run_id):
                 return payload.get("run_id"), payload
+            if isinstance(payload, dict) and payload.get("schema") != _RUN_SNAPSHOT_SCHEMA:
+                print(f"⚠️ latest.json schema 不符合 {_RUN_SNAPSHOT_SCHEMA}，"
+                      "按无效快照处理，回退扫描运行快照", flush=True)
         except Exception as e:
             print(f"⚠️ latest.json 损坏已忽略，回退扫描运行快照: {e}", flush=True)
 
@@ -155,7 +160,9 @@ def load_latest_valid(root, exclude_run_id: str | None = None):
         if exclude_run_id and payload.get("run_id") == exclude_run_id:
             continue
         obs = payload.get("observed_at") or ""
-        if best is None or obs > best[0]:
+        # 同一观测时刻多轮时（分钟级可能发生），取扫描顺序中更后者
+        # （文件名字典序 = run_id 时间戳前缀顺序，近似最新）
+        if best is None or obs >= best[0]:
             best = (obs, payload.get("run_id"), payload)
     if best is None:
         return None, None

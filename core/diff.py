@@ -107,10 +107,10 @@ def diff_changes(old_items: dict, new_items: dict,
 
         oit = old_items[gid]
 
-        # 数值字段：canon 定点比对（缺失/None 跳过；0 是真实值）
+        # 数值字段：canon 按字段级精度比对（缺失/None 跳过；0 是真实值）
         for field, event_type in _NUMERIC_FIELDS:
             old_v, new_v = oit.get(field), it.get(field)
-            old_c, new_c = canon_number(old_v), canon_number(new_v)
+            old_c, new_c = canon_number(old_v, field=field), canon_number(new_v, field=field)
             if old_c is None or new_c is None:
                 continue  # 任一侧缺失 → 不比对（缺失 ≠ 变化）
             if old_c != new_c:

@@ -48,6 +48,23 @@ def _load_existing_ids(path: Path) -> set[str]:
     return ids
 
 
+def _ensure_trailing_newline(path: Path) -> None:
+    """崩溃残留半行隔离（I4 实证缺陷修复）：文件不以换行结尾时先补一个换行。
+
+    否则后续追加的 JSON 会拼接在半行上 → 整行解析失败 → 新事件永久丢失。
+    补换行后，半行成为独立损坏行（读取时跳过并告警），新事件完整独立。
+    """
+    if not path.exists() or path.stat().st_size == 0:
+        return
+    with path.open("rb") as fh:
+        fh.seek(-1, 2)
+        if fh.read(1) != b"\n":
+            with path.open("a", encoding="utf-8") as fh2:
+                fh2.write("\n")
+            print(f"⚠️ 检测到未写完的半行（疑似崩溃残留），已补换行隔离: {path.name}",
+                  flush=True)
+
+
 def append_events(root, events: list[dict], today: str = "") -> tuple[int, int]:
     """把变化事件追加落盘（按月分区 + event_id 去重）。
 
@@ -62,6 +79,7 @@ def append_events(root, events: list[dict], today: str = "") -> tuple[int, int]:
 
     for month, evs in by_month.items():
         path = _month_file(root, month)
+        _ensure_trailing_newline(path)
         existing = _load_existing_ids(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
