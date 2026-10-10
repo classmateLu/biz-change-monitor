@@ -10,19 +10,30 @@ Item 字段：
     price       价格（数值或可转数值的字符串；缺失时不参与价格比对）
     count       数量/份数（可缺省）
     unit_price  单价（可缺省）
+    discount    折扣/优惠（可缺省；数值或可转数值的字符串）
+    status      项目状态，如 上架/下架/暂停（可缺省；缺失时不参与状态比对）
+    store_count 门店数量（可缺省；与 stores 集合独立，未采集详情时也可提供）
     extra       其他平台特有字段（原样携带，核心引擎不解释）
 
+缺失语义约定（v2，与需求一一对应）：
+    None / 空串   → 字段缺失（缺失 ≠ 零值 ≠ 变化）
+    0            → 真实业务值"零"，参与比对
+    数值比较统一走 canon_number（Decimal 定点），避免浮点近似比较
+
 stores 维度：
-    {gid: [门店名, ...]}   比对与顺序无关
+    {gid: [门店名, ...]}   比对与顺序无关；None = 未采集（未知），[] = 确认无门店
 """
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable
 
-ITEM_FIELDS = ("gid", "name", "price", "count", "unit_price")
+ITEM_FIELDS = ("gid", "name", "price", "count", "unit_price",
+               "discount", "status", "store_count")
 
 
-def make_item(gid, name=None, price=None, count=None, unit_price=None, **extra) -> dict:
+def make_item(gid, name=None, price=None, count=None, unit_price=None,
+              discount=None, status=None, store_count=None, **extra) -> dict:
     """构造一个归一化 item。gid 强制转字符串（平台侧可能是数字）。"""
     it: dict[str, Any] = {
         "gid": str(gid),
@@ -30,6 +41,9 @@ def make_item(gid, name=None, price=None, count=None, unit_price=None, **extra) 
         "price": price,
         "count": count,
         "unit_price": unit_price,
+        "discount": discount,
+        "status": status,
+        "store_count": store_count,
     }
     if extra:
         it["extra"] = extra
@@ -59,4 +73,24 @@ def to_number(value):
     try:
         return float(value)
     except (TypeError, ValueError):
+        return None
+
+
+def canon_number(value):
+    """规范数值（v2）：统一转 Decimal 并定点到 0.01，用于**比对**。
+
+    - '10.0' / 10 / 10.00 → Decimal('10.00')，杜绝字符串/整型/浮点形态差异误报
+    - None / 空串 / 无法解析 → None（缺失语义，调用方跳过比对）
+    - 0 是真实业务值，与 None 严格区分
+    - 事件里的 old_value/new_value 仍存原始值（人类可读），比对只用本函数结果
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+    try:
+        return Decimal(str(value)).quantize(Decimal("0.01"))
+    except (InvalidOperation, ValueError, TypeError):
         return None

@@ -8,6 +8,10 @@ validation:
   min_records: 50                 # 最小记录数阈值（低于视为采集不完整）
   max_detail_failure_ratio: 0.05  # 逐对象详情失败比例上限
 
+engine:                            # v2 数据引擎（阶段2 新增）
+  archive_interval_minutes: 60     # 归档快照间隔（分钟）；仅完整运行产生归档
+  # websocket_trigger_enabled: false  # WS 触发器：PoC 验证前默认关闭（未实现，占位）
+
 dingtalk:                          # 可选：不填则运行在 dry-run 模式（只打印不同步）
   app_key: ""                      # 钉钉开放平台 Client ID
   app_secret: ""                   # 钉钉开放平台 Client Secret（v0.1 从本文件读取，勿提交）

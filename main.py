@@ -37,14 +37,19 @@ import os
 import re
 import sys
 import time
+import uuid
+from datetime import datetime
 from pathlib import Path
 
 import yaml
 
 from adapters.example_adapter import ExampleAdapter
 from core.diff import diff_changes, summarize
+from core.events import append_events
 from core.models import index_by_id
-from core.snapshot import load_latest_snapshot, save_snapshot
+from core.runlog import append_run_record
+from core.snapshot import (archive_if_due, load_latest_valid, save_run_snapshot,
+                           update_latest)
 from core.validation import validate_collection
 
 ROOT = Path(__file__).resolve().parent
@@ -280,21 +285,62 @@ def main() -> int:
     cfg_path = ROOT / "config" / "config.yaml"
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
     val_cfg = (cfg or {}).get("validation") or {}
+    engine_cfg = (cfg or {}).get("engine") or {}
+
+    # v2 数据契约：run_id（本轮唯一标识）+ observed_at（ISO 含时区观测时间）
+    run_id = f"{time.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    observed_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    started_at = observed_at
 
     # 1) 采集（示例：替换成你自己的 adapter 即接入真实平台）
     adapter = ExampleAdapter()
     result = adapter.fetch()
 
-    # 2) 完整性校验：失败 → 不写快照、不比对、不同步
+    # 1.5) 建索引：重复 gid 是结构性错误（fail-closed，绝不静默覆盖）
+    structure_errors: list[str] = []
+    try:
+        items_index = index_by_id(result.items)
+    except ValueError as e:
+        structure_errors.append(str(e))
+        items_index = {}
+
+    # 2) 完整性校验（两道闸门之第一道）：失败 → 留运行记录+留证快照，不比对不同步
     ok, reason = validate_collection(
         len(result.items),
         min_records=int(val_cfg.get("min_records", 50)),
         failed_pages=result.failed_pages,
         detail_total=result.detail_total,
         detail_failed=result.detail_failed,
-        max_detail_failure_ratio=float(val_cfg.get("max_detail_failure_ratio", 0.05)))
+        max_detail_failure_ratio=float(val_cfg.get("max_detail_failure_ratio", 0.05)),
+        expected_count=result.total,
+        structure_errors=structure_errors)
+
+    run_record = {
+        "run_id": run_id,
+        "started_at": started_at,
+        "finished_at": None,
+        "observed_at": observed_at,
+        "complete": bool(ok),
+        "expected_count": result.total,
+        "collected_count": len(result.items),
+        "unique_count": len(items_index),
+        "failed_pages": list(result.failed_pages),
+        "failed_items": [],
+        "detail_failed": result.detail_failed,
+        "validation_errors": [reason] if reason else [],
+    }
+
     if not ok:
-        msg = f"【采集不完整】{today} 校验未通过：{reason}。已终止（未写快照/未比对/未同步）。"
+        run_record["finished_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+        append_run_record(ROOT, run_record)
+        # 失败也留证：complete=false 的运行快照（绝不进入基线/latest）
+        save_run_snapshot(ROOT, run_id, observed_at, complete=False,
+                          items=result.items, stores=result.stores,
+                          total=result.total, expected_count=result.total,
+                          collected_count=len(result.items),
+                          failed_pages=result.failed_pages,
+                          validation_errors=[reason])
+        msg = f"【采集不完整】{today} 校验未通过：{reason}。已终止（不进基线/不比对/不同步）。"
         print(f"❌ {msg}", flush=True)
         dt = load_dingtalk_config(cfg)
         if dt and dt.get("webhook"):
@@ -302,36 +348,63 @@ def main() -> int:
             dk.send_webhook(dt["webhook"], msg, dt.get("webhook_keyword", ""))
         return 1
 
-    # 3) 快照（原子写入）+ 基线
-    items_index = index_by_id(result.items)
-    snap = save_snapshot(ROOT / "data" / "snapshots", today,
-                         result.items, result.stores, total=result.total)
-    print(f"快照已保存: {snap.name}（{len(result.items)} 条）", flush=True)
-    base_date, base_payload = load_latest_snapshot(ROOT / "data" / "snapshots",
-                                                   before_date=today)
+    # 3) 先取上一份有效完整基线（必须在写入本轮快照/latest 之前）
+    base_run_id, base_payload = load_latest_valid(ROOT, exclude_run_id=run_id)
+
+    # 4) 保存本轮完整快照（留证）→ 更新 latest → 归档（间隔可配置）
+    save_run_snapshot(ROOT, run_id, observed_at, complete=True,
+                      items=result.items, stores=result.stores,
+                      total=result.total, expected_count=result.total,
+                      collected_count=len(result.items),
+                      failed_pages=result.failed_pages)
+    update_latest(ROOT, {
+        "schema": "run-snapshot-v1", "run_id": run_id, "observed_at": observed_at,
+        "complete": True, "total": result.total, "expected_count": result.total,
+        "collected_count": len(result.items), "unique_count": len(items_index),
+        "failed_pages": list(result.failed_pages), "failed_items": [],
+        "validation_errors": [], "items": result.items, "stores": result.stores,
+    })
+    archive_interval = int(engine_cfg.get("archive_interval_minutes", 60))
+    arch = archive_if_due(ROOT, {
+        "schema": "run-snapshot-v1", "run_id": run_id, "observed_at": observed_at,
+        "complete": True, "items": result.items, "stores": result.stores,
+    }, interval_minutes=archive_interval)
+    if arch:
+        print(f"归档快照: {arch.name}", flush=True)
+
+    # 5) Diff（两道闸门之第二道：只有完整快照才进入比对）
+    changes: list[dict] = []
     if base_payload is None:
         print("无历史基线（首次运行），本次仅建快照，不产出变化事件。", flush=True)
-        return 0
-    old_items = index_by_id(base_payload["items"])
+    else:
+        old_items = index_by_id(base_payload["items"])
+        changes = diff_changes(old_items, items_index,
+                               base_payload.get("stores"), result.stores,
+                               date=today, run_id=run_id, observed_at=observed_at,
+                               previous_observed_at=base_payload.get("observed_at"))
+        counts = summarize(changes)
+        print(f"对比基线 {base_run_id}（观测于 {base_payload.get('observed_at')}）："
+              f"变化 {len(changes)} 条 {counts}", flush=True)
+        for c in changes[:20]:
+            print(f"  [{c['type']}] {c['gid']} {c.get('name') or ''} {c['note']}", flush=True)
+        if len(changes) > 20:
+            print(f"  ……其余 {len(changes) - 20} 条见同步表", flush=True)
+        # 变化事件落盘（event_id 幂等：同轮重试不重复）
+        appended, skipped = append_events(ROOT, changes, today=today)
+        print(f"事件落盘: 新增 {appended}，去重跳过 {skipped}", flush=True)
 
-    # 4) Diff（纯函数）
-    changes = diff_changes(old_items, items_index,
-                           base_payload.get("stores"), result.stores, date=today)
-    counts = summarize(changes)
-    print(f"对比 {base_date}：变化 {len(changes)} 条 {counts}", flush=True)
-    for c in changes[:20]:
-        print(f"  [{c['type']}] {c['gid']} {c.get('name') or ''} {c['note']}", flush=True)
-    if len(changes) > 20:
-        print(f"  ……其余 {len(changes) - 20} 条见同步表", flush=True)
-
-    # 5) 同步模式裁决（默认安全：dry-run；写入需 --enable-write + 双重校验）
+    # 6) 同步模式裁决（默认安全：dry-run；写入需 --enable-write + 双重校验）
     dt = load_dingtalk_config(cfg)
     mode, reason = decide_write_mode(args.enable_write, adapter, dt)
     if mode == "refuse":
+        run_record["finished_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+        append_run_record(ROOT, run_record)
         print(f"❌ {reason}", flush=True)
         return 2
     if mode == "write":
         if not dingtalk_sync(dt, today, items_index, changes):
+            run_record["finished_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+            append_run_record(ROOT, run_record)
             print("❌ 同步存在未成功项，本次以失败退出（退出码 1）。"
                   "已成功写入的表下次重试默认跳过（at-least-once，见 README）。", flush=True)
             return 1
@@ -339,6 +412,8 @@ def main() -> int:
         print(f"[dry-run] {reason}；"
               f"本次检测到 {len(changes)} 条变化，未写入钉钉。", flush=True)
 
+    run_record["finished_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+    append_run_record(ROOT, run_record)
     print("DONE", flush=True)
     return 0
 

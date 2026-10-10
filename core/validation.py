@@ -14,7 +14,9 @@ def validate_collection(item_count: int,
                         failed_pages: list | None = None,
                         detail_total: int = 0,
                         detail_failed: int = 0,
-                        max_detail_failure_ratio: float = 0.05) -> tuple[bool, str]:
+                        max_detail_failure_ratio: float = 0.05,
+                        expected_count: int | None = None,
+                        structure_errors: list | None = None) -> tuple[bool, str]:
     """校验一次采集的完整性。
 
     参数：
@@ -23,6 +25,8 @@ def validate_collection(item_count: int,
         failed_pages               分页失败的页码列表（非空即不完整）
         detail_total/detail_failed 逐对象详情查询的 总数/失败数
         max_detail_failure_ratio   详情失败比例上限（超过即不完整）
+        expected_count             源数据可信总量（可得时传入；与实采数不一致即不完整）
+        structure_errors           结构性错误列表（如重复 gid、响应结构异常）
 
     返回 (ok, reason)；reason 为空串表示通过。
     """
@@ -36,4 +40,9 @@ def validate_collection(item_count: int,
         if ratio > max_detail_failure_ratio:
             reasons.append(f"详情失败比例 {ratio:.0%} 超过上限 {max_detail_failure_ratio:.0%}"
                            f"（{detail_failed}/{detail_total}）")
+    if expected_count is not None and item_count != expected_count:
+        reasons.append(f"实采数 {item_count} 与源数据总量 {expected_count} 不一致"
+                       "（分页遗漏或扫描期间数据变化）")
+    if structure_errors:
+        reasons.append("结构性错误: " + "; ".join(structure_errors[:5]))
     return (not reasons, "; ".join(reasons))
