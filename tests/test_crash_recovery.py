@@ -20,6 +20,7 @@
     I11 未提交运行：latest 有效时不越级当基线；回退时 pending-but-complete 快照安全可用
     I12 重启后重复恢复扫描幂等（结果一致、数据不变）
     I13 pending 先落盘静态断言（main.py 运行开始即写 pending，合并前终检 §2-A）
+    I14 数值表示漂移（11 vs 11.0）→ 同一变化同 event_id（合并前终检 §1 复核项）
 
 既可用 pytest 运行，也可直接执行：python tests/test_crash_recovery.py
 全部虚构数据，隔离在临时目录。
@@ -155,6 +156,35 @@ def run_checks():
                      if e.get("gid") == "G-001" and e.get("field") == "price"]
         checks.append((len(g1_events) == 1,
                        "I10b 跨 run_id 再观测（同基线对）：内容幂等键去重，仍一行"))
+
+        # ---------- I14: 数值表示漂移 → 同一变化同 event_id（终检 §1 复核项） ----------
+        # 同一基线对，"10→11"（int）与"10→11.0"（float）必须同键——源数据数值
+        # 表示在两次运行间漂移时，不得产生重复事件行（比对层 Decimal 按值相等
+        # 已保证无误报，本项保证哈希层同样表示无关）。
+        _kw = dict(date="2026-10-10", run_id="run-N", observed_at=OBS_B,
+                   previous_observed_at=OBS_A)
+        e_int = diff_changes(index_by_id([make_item("G-500", name="对象N", price=10)]),
+                             index_by_id([make_item("G-500", name="对象N", price=11)]),
+                             None, None, **_kw)
+        e_flt = diff_changes(index_by_id([make_item("G-500", name="对象N", price=10)]),
+                             index_by_id([make_item("G-500", name="对象N", price=11.0)]),
+                             None, None, **_kw)
+        checks.append((len(e_int) == 1 and len(e_flt) == 1
+                       and e_int[0]["event_id"] == e_flt[0]["event_id"],
+                       "I14 新值表示漂移（11 vs 11.0）：同一变化同 event_id"))
+        e_old_int = diff_changes(index_by_id([make_item("G-500", name="对象N", price=10)]),
+                                 index_by_id([make_item("G-500", name="对象N", price=12)]),
+                                 None, None, **_kw)
+        e_old_flt = diff_changes(index_by_id([make_item("G-500", name="对象N", price=10.0)]),
+                                 index_by_id([make_item("G-500", name="对象N", price=12)]),
+                                 None, None, **_kw)
+        checks.append((e_old_int[0]["event_id"] == e_old_flt[0]["event_id"],
+                       "I14 旧值表示漂移（10 vs 10.0）：同 event_id"))
+        e_zero = diff_changes(index_by_id([make_item("G-500", name="对象N", price=0)]),
+                              index_by_id([make_item("G-500", name="对象N", price=0.0)]),
+                              None, None, **_kw)
+        checks.append((len(e_zero) == 0,
+                       "I14 零值表示漂移（0 vs 0.0）：无变化即零事件（比对层语义不变）"))
 
         # ---------- I3: latest 损坏 / schema 无效 → 回退扫描 ----------
         latest_path = tmp / "data" / "snapshots" / "latest.json"

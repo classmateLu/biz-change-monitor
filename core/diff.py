@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from decimal import Decimal
 
 from .models import canon_number, to_number
 
@@ -66,7 +67,23 @@ _TEXT_FIELDS = (
 
 
 def _hash_val(v) -> str:
-    """幂等键用的稳定序列化：标量 str()；集合/字典排序后 JSON（跨运行确定性）。"""
+    """幂等键用的稳定序列化（合并前终检 §1 复核项修订）。
+
+    - 数值（int/float/Decimal，排除 bool）：先 Decimal(str(v)) 再 normalize
+      + 'f' 格式化——11 与 11.0 与 Decimal('11.0') 同值同键，源数据数值
+      表示在两次运行间漂移不会产生不同 event_id（0 与 -0.0 归一为 "0"）
+    - 集合：排序后 JSON（顺序无关）
+    - 字典：sort_keys 后 JSON（键序无关）
+    - 其余标量：str()
+    全部确定性：同一逻辑值跨运行、跨环境得到同一字符串。
+    """
+    if isinstance(v, bool):
+        return str(v)
+    if isinstance(v, (int, float, Decimal)):
+        d = Decimal(str(v))
+        if d == 0:
+            return "0"
+        return format(d.normalize(), "f")
     if isinstance(v, (list, tuple, set)):
         return json.dumps(sorted(v), ensure_ascii=False, default=str)
     if isinstance(v, dict):
