@@ -9,9 +9,9 @@
 注入方式（如实声明）：
     F1 事件文件写入失败   —— 事件文件路径被目录占位（模拟权限/介质错误，
                               open("a") 抛 IsADirectoryError ⊂ OSError）
-    F2 事件 fsync 失败    —— mock os.fsync：第 1 次（pending runlog）放行，
-                              第 2 次（事件文件，顺序由 I13/I7 静态断言锁定）
-                              抛 OSError
+    F2 事件 fsync 失败    —— mock os.fsync：**按目标文件 inode 识别**
+                              （终审五轮 §F2 精化，不依赖调用序号），
+                              仅事件文件 fsync 抛 OSError，其余放行
     F3 快照更新失败       —— mock os.replace：目标在 runs/ 下时抛 OSError
                               （事件已 fsync，快照 tmp 已写、改名失败）
     F4 latest 更新失败    —— mock os.replace：目标为 latest.json 时抛
@@ -162,15 +162,26 @@ def scenario_f2_fsync_failure(tmp: Path):
     rid_a, _ = load_latest_valid(tmp)
     changed = _items({"DEMO-A": 99, "DEMO-B": 20, "DEMO-C": 30})
 
-    # 注入：os.fsync 第 1 次 = pending runlog（放行），第 2 次 = 事件文件（失败）。
-    # 顺序依据：main.py pending 先落盘（I13）+ 事件先于快照（I7）静态断言锁定。
-    real_fsync = __import__("os").fsync
-    calls = {"n": 0}
+    # 注入（终审五轮 §F2 精化）：**按目标文件识别**，不依赖调用序号——
+    # 以 (st_dev, st_ino) 匹配事件文件，仅事件文件的 fsync 失败；pending
+    # runlog 等其他文件放行。以后新增文件同步也不会误伤别的目标。
+    # 注入轮中事件文件已存在（基线轮创建），可稳定取 inode。
+    import os as _os
+    events_path = events_dir(tmp) / f"events-{MONTH}.jsonl"
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    events_path.touch()  # 基线轮无变化未创建事件文件；预创建空文件（append 正常追加）
+    _st = events_path.stat()
+    target = (_st.st_dev, _st.st_ino)
+    real_fsync = _os.fsync
+    hits = {"called": 0, "failed": 0}
 
     def flaky_fsync(fd):
-        calls["n"] += 1
-        if calls["n"] == 2:
-            raise OSError(5, "simulated fsync failure on events file")
+        fst = _os.fstat(fd)
+        if (fst.st_dev, fst.st_ino) == target:
+            hits["called"] += 1
+            if hits["failed"] == 0:
+                hits["failed"] += 1
+                raise OSError(5, "simulated fsync failure on events file")
         return real_fsync(fd)
 
     with mock.patch("os.fsync", side_effect=flaky_fsync):
@@ -182,8 +193,14 @@ def scenario_f2_fsync_failure(tmp: Path):
     checks.append((raised is not None,
                    f"F2 fsync 失败 → main() 以 OSError 崩溃（{type(raised).__name__}），"
                    "不吞异常不推进基线"))
-    checks.append((calls["n"] >= 2, "F2 注入点确实到达（事件文件 fsync 被调用）"))
+    checks.append((hits["called"] >= 1 and hits["failed"] == 1,
+                   "F2 事件文件 fsync 确实被调用且失败（按目标文件 inode 识别，"
+                   "非调用序号——终审五轮 §F2 精化）"))
     checks.append((load_latest_valid(tmp)[0] == rid_a, "F2 崩溃后 latest 未推进"))
+    runs_complete = [p for p in (tmp / "data" / "snapshots" / "runs").glob("*.json")
+                     if not p.name.startswith(".tmp_")]
+    checks.append((len(runs_complete) == 1,
+                   "F2 快照提交未发生（runs/ 仅基线轮一份 complete 快照）"))
     evs = _price_events(tmp)
     checks.append((len(evs) == 1,
                    "F2 事件数据已 flush 到页缓存（进程级可见）——故障轮事件在盘"))
