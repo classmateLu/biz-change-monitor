@@ -55,13 +55,18 @@ def run_checks():
         by_type.setdefault(c["type"], []).append(c)
 
     checks = [
-        (len(changes) == 5, f"共检出5条变化（实际{len(changes)}）"),
+        # v2 起单价参与比对：DEMO-0004 价格 400→450 连带 unit_price 80→90，
+        # 同对象两字段各产生一条独立事件 → 总数 5+1=6（规格 §6.1 字段级比对）
+        (len(changes) == 6, f"共检出6条变化（实际{len(changes)}）"),
         (by_type.get("removed", [{}])[0].get("gid") == "DEMO-0002", "removed=DEMO-0002"),
         (by_type.get("new", [{}])[0].get("gid") == "DEMO-0003", "new=DEMO-0003"),
     ]
     pc = by_type.get("price_changed", [{}])[0]
     checks.append((pc.get("gid") == "DEMO-0004" and pc.get("old_value") == 400.0
                    and pc.get("new_value") == 450.0, "price_changed 400→450"))
+    upc = [c for c in changes if c["type"] == "unit_price_changed"]
+    checks.append((len(upc) == 1 and upc[0].get("gid") == "DEMO-0004",
+                   "v2 新增：unit_price_changed 80→90 一并检出"))
     nc = by_type.get("name_changed", [{}])[0]
     checks.append((nc.get("gid") == "DEMO-0005" and nc.get("old_value") == "旧名字"
                    and nc.get("new_value") == "新名字", "name_changed 旧名字→新名字"))
