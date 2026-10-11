@@ -19,10 +19,19 @@
     detail_failed     详情查询失败数
     validation_errors 完整性校验失败原因
 - 运行记录不自动删除（保留期限待业务定，不擅自清理）
+
+持久性保证的如实区分（终审二轮 §2-5）：
+- **进程异常退出**（SIGKILL/异常，OS 存活）：write + close 后数据已在
+  内核页缓存，进程死亡不影响——后续读取可见。
+- **操作系统崩溃/断电**：append_run_record 额外 fsync，运行记录在函数
+  返回前已落盘介质，断电不丢。events.py（core/events.py）目前仅
+  close-flush：进程崩溃级保证，断电可能丢尾部事件——但事件可由下一轮
+  以旧基线重 diff + 内容幂等键重建（无漏报），故不依赖断电级持久。
 """
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 
@@ -55,6 +64,8 @@ def append_run_record(root, record: dict) -> Path:
                       flush=True)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())  # 断电/内核崩溃下也持久（进程崩溃本就由 close 保证）
     return path
 
 

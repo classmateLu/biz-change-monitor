@@ -19,6 +19,7 @@
     → 原子快照 → 更新 latest → 归档
     → dry-run：只打印变化 / write：同步表A/表B（幂等保护）→ exit 0
     → 写入模式被拒绝 → exit 2
+    → pending 运行记录写入失败 → exit 3（fail-closed：不采集、不比对）
 
 幂等与恢复语义（如实声明）：
     - data/sync_state.json 记录"当天已成功写入"的表（键=表ID，值含日期+数据摘要，
@@ -300,13 +301,19 @@ def main() -> int:
     # 状态机第一步：pending 先落盘（合并前终检 §2 处置 A）——进程中途被杀时
     # runlog 仍留有 pending 记录，recover_pending_runs 可识别并告警；
     # 终态（committed/failed）再追加一条完整记录，JSONL 以末条为准。
-    append_run_record(ROOT, {
-        "run_id": run_id,
-        "started_at": started_at,
-        "finished_at": None,
-        "status": "pending",
-        "observed_at": observed_at,
-    })
+    # 写入失败 = fail-closed：显式中止本轮（exit 3），绝不带病继续采集。
+    try:
+        append_run_record(ROOT, {
+            "run_id": run_id,
+            "started_at": started_at,
+            "finished_at": None,
+            "status": "pending",
+            "observed_at": observed_at,
+        })
+    except OSError as e:
+        print(f"❌ pending 运行记录写入失败（{e}），中止本轮不采集（fail-closed）。",
+              flush=True)
+        return 3
 
     # 1) 采集（示例：替换成你自己的 adapter 即接入真实平台）
     adapter = ExampleAdapter()

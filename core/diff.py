@@ -66,29 +66,46 @@ _TEXT_FIELDS = (
 )
 
 
-def _hash_val(v) -> str:
-    """幂等键用的稳定序列化（合并前终检 §1 复核项修订）。
+def _num_repr(d: Decimal) -> str:
+    """数值的**精确**十进制表示（无上下文舍入）。
 
-    - 数值（int/float/Decimal，排除 bool）：先 Decimal(str(v)) 再 normalize
-      + 'f' 格式化——11 与 11.0 与 Decimal('11.0') 同值同键，源数据数值
-      表示在两次运行间漂移不会产生不同 event_id（0 与 -0.0 归一为 "0"）
-    - 集合：排序后 JSON（顺序无关）
-    - 字典：sort_keys 后 JSON（键序无关）
-    - 其余标量：str()
-    全部确定性：同一逻辑值跨运行、跨环境得到同一字符串。
+    format(d, "f") 按值精确展开（绝不应用 context precision，也不产生
+    科学计数法），随后仅做**语法层面**的末尾零剥离——两个不同数值不可能
+    得到同一字符串（Decimal(str(x)) 构造本身也是精确的，全程无算术运算，
+    因此不受默认上下文 28 位有效数字限制）。
+    """
+    s = format(d, "f")
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    if s in ("", "-0"):
+        s = "0"
+    return s
+
+
+def _hash_val(v) -> str:
+    """幂等键用的稳定序列化（合并前终检 §1 复核项修订，终审二轮 §1 再修订）。
+
+    - 数值（int/float/Decimal，排除 bool）：精确十进制展开 + 末尾零剥离——
+      11 与 11.0 与 Decimal("11.00") 同值同键；0/-0.0 归一为 "0"；
+      **不使用 normalize()**（其应用 context precision，默认 28 位有效
+      数字，≥29 位输入会发生舍入，可能使不同数值得到相同表示）
+    - 列表/元组/集合：元素逐一递归规范后按字符串排序——容器顺序无关，
+      嵌套数值同样归一
+    - 字典：键 JSON 引用后排序，值递归规范——键序无关
+    - 其余标量（含字符串/None）：JSON 字符串字面量（带引号转义，无歧义）
+    全部确定性：同一逻辑值跨运行、跨环境、跨表示得到同一字符串。
     """
     if isinstance(v, bool):
-        return str(v)
+        return "true" if v else "false"
     if isinstance(v, (int, float, Decimal)):
-        d = Decimal(str(v))
-        if d == 0:
-            return "0"
-        return format(d.normalize(), "f")
+        return _num_repr(Decimal(str(v)))
     if isinstance(v, (list, tuple, set)):
-        return json.dumps(sorted(v), ensure_ascii=False, default=str)
+        return "[" + ",".join(sorted(_hash_val(e) for e in v)) + "]"
     if isinstance(v, dict):
-        return json.dumps(v, sort_keys=True, ensure_ascii=False, default=str)
-    return str(v)
+        pairs = sorted((json.dumps(str(k), ensure_ascii=False), _hash_val(val))
+                       for k, val in v.items())
+        return "{" + ",".join(f"{k}:{h}" for k, h in pairs) + "}"
+    return json.dumps(str(v), ensure_ascii=False)
 
 
 def _content_event_id(gid: str, field: str, event_type: str,
