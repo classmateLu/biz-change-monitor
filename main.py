@@ -297,6 +297,17 @@ def main() -> int:
     observed_at = datetime.now().astimezone().isoformat(timespec="seconds")
     started_at = observed_at
 
+    # 状态机第一步：pending 先落盘（合并前终检 §2 处置 A）——进程中途被杀时
+    # runlog 仍留有 pending 记录，recover_pending_runs 可识别并告警；
+    # 终态（committed/failed）再追加一条完整记录，JSONL 以末条为准。
+    append_run_record(ROOT, {
+        "run_id": run_id,
+        "started_at": started_at,
+        "finished_at": None,
+        "status": "pending",
+        "observed_at": observed_at,
+    })
+
     # 1) 采集（示例：替换成你自己的 adapter 即接入真实平台）
     adapter = ExampleAdapter()
     result = adapter.fetch()

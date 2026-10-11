@@ -13,8 +13,11 @@
     type                与 event_type 同值（v1 兼容键）
     gid / name / old_value / new_value / note / date   （v1 兼容键）
 
-event_id 语义（合并前终审 §1.3 修订：**内容键，不含 run_id**）：
-    event_id = sha256(gid|field|event_type|previous_observed_at|稳定旧值|稳定新值)
+event_id 语义（合并前终审 §1.3 修订：**内容键，不含 run_id**；
+合并前终检 §1 修订：哈希输入为**规范 JSON 数组**，字段边界无歧义，
+值含分隔符也不会产生切分碰撞）：
+    event_id = sha256(规范JSON([gid, field, event_type,
+                                previous_observed_at, 稳定旧值, 稳定新值]))
     - 「同一运行重放」→ 同键 → 落盘去重（无重复行）
     - 「崩溃恢复后不同 run 对**同一基线对**的再观测」→ 同键 → 落盘去重（无重复行）
     - 「不同基线对之间再次发生的真实变化」→ previous_observed_at 不同
@@ -73,9 +76,15 @@ def _hash_val(v) -> str:
 
 def _content_event_id(gid: str, field: str, event_type: str,
                       previous_observed_at, old_value, new_value) -> str:
-    """内容幂等键（不含 run_id，语义见模块 docstring）。"""
-    raw = "|".join((gid, field, event_type, str(previous_observed_at or ""),
-                    _hash_val(old_value), _hash_val(new_value)))
+    """内容幂等键（不含 run_id，语义见模块 docstring）。
+
+    哈希输入为**规范 JSON 数组**（合并前终检 §1 修订）：字段边界由 JSON
+    结构保证无歧义——值中含分隔符（如 "|"）也不会产生不同 (old, new)
+    对被切分成同一输入的碰撞。
+    """
+    raw = json.dumps([gid, field, event_type, str(previous_observed_at or ""),
+                      _hash_val(old_value), _hash_val(new_value)],
+                     ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 

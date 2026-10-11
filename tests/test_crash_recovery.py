@@ -19,6 +19,7 @@
     I10 不同基线对之间的真实变化 → 各自成事件（去重不漏报）
     I11 未提交运行：latest 有效时不越级当基线；回退时 pending-but-complete 快照安全可用
     I12 重启后重复恢复扫描幂等（结果一致、数据不变）
+    I13 pending 先落盘静态断言（main.py 运行开始即写 pending，合并前终检 §2-A）
 
 既可用 pytest 运行，也可直接执行：python tests/test_crash_recovery.py
 全部虚构数据，隔离在临时目录。
@@ -249,6 +250,14 @@ def run_checks():
         lat_pos = main_src.find("update_latest(ROOT, {")
         checks.append((0 < ev_pos < lat_pos,
                        "I7 main.py 顺序不变式：append_events 必须先于 update_latest（静态断言）"))
+
+        # ---------- I13: pending 先落盘（合并前终检 §2 处置 A） ----------
+        # main.py 必须在采集开始前就落盘 pending 记录——否则进程中途被杀时
+        # runlog 无该轮痕迹，recover_pending_runs 永远扫不到真实中断轮。
+        pend_pos = main_src.find('"status": "pending"')
+        fetch_pos = main_src.find("result = adapter.fetch()")
+        checks.append((0 < pend_pos < fetch_pos,
+                       "I13 main.py 运行开始即落盘 pending（中断轮可被恢复扫描识别，静态断言）"))
 
         # ---------- I8: 历史不清空——多轮 JSONL 追加 + 重启读取 ----------
         evs = load_events(tmp, "202610")
