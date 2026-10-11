@@ -6,7 +6,7 @@
 输入会被舍入——两个不同数值可能得到相同表示。修复后归一化改为
 "精确十进制展开 + 语法层末尾零剥离"（无算术运算，不受上下文限制）。
 
-覆盖（按 GPT 要求逐项）：
+覆盖（按 GPT 要求逐项；H10-H12 为终审三轮 §1 反例）：
     H1 int / float / Decimal 同值归一（11 / 11.0 / Decimal("11.00")）
     H2 0 与 -0.0 同值同键；零值与 None/字符串严格不同键
     H3 不同数值不得因归一化而意外相同
@@ -16,6 +16,9 @@
     H7 嵌套数值规范：容器内 int/float/Decimal 同值同键
     H8 字符串与数值严格不同键（"11" ≠ 11）
     H9 嵌套结构歧义防护：含分隔符/引号的字符串元素不改变边界
+    H10 None 与同名字符串严格不同键（None ≠ "None"，None ≠ "null"）
+    H11 字典键类型保留：{1: x} ≠ {"1": x}，{None: x} ≠ {"None": x}
+    H12 类型化编码的正向同键不回退（bool/None/字符串/数值互不混淆）
 
 既可用 pytest 运行，也可直接执行：python tests/test_hash_val.py
 全部虚构数据，无 IO、无网络。
@@ -107,6 +110,34 @@ def run_checks():
     checks.append((_hash_val([tricky]) == _hash_val([tricky]), "H9 tricky 字符串自洽"))
     checks.append((_hash_val({"{}": [1]}) == _hash_val({"{}": (1,)}),
                    "H9 键含花括号不影响键序规范"))
+
+    # ---------- H10: None 与同名字符串严格不同键（终审三轮 §1-1 反例） ----------
+    checks.append((_hash_val(None) != _hash_val("None"),
+                   "H10 None ≠ 字符串 'None'（旧实现两者同键，GPT 反例）"))
+    checks.append((_hash_val(None) != _hash_val("null"),
+                   "H10 None ≠ 字符串 'null'（null 字面量与 JSON 字符串不同键）"))
+    checks.append((_hash_val(None) != _hash_val(True)
+                   and _hash_val(True) != _hash_val("true"),
+                   "H10 None / true / 'true' 三者互不同键"))
+    checks.append((_hash_val("None") == _hash_val("None"), "H10 字符串自洽"))
+
+    # ---------- H11: 字典键类型保留（终审三轮 §1-2 反例） ----------
+    checks.append((_hash_val({1: "x"}) != _hash_val({"1": "x"}),
+                   "H11 数字键 1 ≠ 字符串键 '1'（旧实现 str(k) 后同键，GPT 反例）"))
+    checks.append((_hash_val({None: "x"}) != _hash_val({"None": "x"}),
+                   "H11 None 键 ≠ 字符串键 'None'"))
+    checks.append((_hash_val({True: "x"}) != _hash_val({"true": "x"}),
+                   "H11 bool 键 ≠ 字符串键 'true'"))
+    checks.append((_hash_val({1: "x"}) == _hash_val({1: "x"}), "H11 同型键自洽"))
+    checks.append((_hash_val({2: "x", 1: "y"}) == _hash_val({1: "y", 2: "x"}),
+                   "H11 同型数字键仍键序无关"))
+
+    # ---------- H12: 类型化编码不回退（正向同键保持） ----------
+    checks.append((_hash_val(True) != _hash_val(1),
+                   "H12 bool true ≠ 数值 1（bool 分支先于数值）"))
+    checks.append((_hash_val("") != _hash_val(None)
+                   and _hash_val(None) != _hash_val("null"),
+                   "H12 空串 / None / 'null' 三者互不同键"))
 
     return checks
 

@@ -21,6 +21,8 @@
     I12 重启后重复恢复扫描幂等（结果一致、数据不变）
     I13 pending 先落盘静态断言（main.py 运行开始即写 pending，合并前终检 §2-A）
     I14 数值表示漂移（11 vs 11.0）→ 同一变化同 event_id（合并前终检 §1 复核项）
+    I15 跨月崩溃恢复：上月遗留 pending 在本月首次运行可被发现（终审三轮 §4）
+    I16 事件持久化屏障静态断言：append_events 返回前 fsync（终审三轮 §3）
 
 既可用 pytest 运行，也可直接执行：python tests/test_crash_recovery.py
 全部虚构数据，隔离在临时目录。
@@ -288,6 +290,41 @@ def run_checks():
         fetch_pos = main_src.find("result = adapter.fetch()")
         checks.append((0 < pend_pos < fetch_pos,
                        "I13 main.py 运行开始即落盘 pending（中断轮可被恢复扫描识别，静态断言）"))
+
+        # ---------- I15: 跨月崩溃恢复（终审三轮 §4） ----------
+        # 月末运行留下 pending，月初第一次运行（now=下月）必须能发现——
+        # 旧实现只读当前月日志，上月遗留永远扫不到。
+        prev_path = append_run_record(tmp, {
+            "run_id": "run-XMONTH", "status": "pending",
+            "started_at": "2026-10-31T23:58:00+08:00",
+        })
+        checks.append(("202610" in prev_path.name,
+                       "I15 前置：10月末 pending 记录落在 10月日志文件"))
+        pend_nov = recover_pending_runs(
+            tmp, now=datetime(2026, 11, 1, 0, 5).astimezone())
+        checks.append(("run-XMONTH" in pend_nov,
+                       "I15 11月首次运行能发现 10月遗留 pending（跨月恢复）"))
+        # 遗留 pending 在新月份收尾 → 不再误报（新月记录覆盖旧月）
+        append_run_record(tmp, {
+            "run_id": "run-XMONTH", "status": "committed",
+            "started_at": "2026-10-31T23:58:00+08:00",
+            "finished_at": "2026-11-01T00:04:00+08:00",
+        })
+        pend_nov2 = recover_pending_runs(
+            tmp, now=datetime(2026, 11, 1, 0, 6).astimezone())
+        checks.append(("run-XMONTH" not in pend_nov2,
+                       "I15 跨月收尾后不再误报（新月覆盖旧月，末条为准）"))
+
+        # ---------- I16: 事件持久化屏障静态断言（终审三轮 §3） ----------
+        # append_events 返回前必须 fsync——「基线已推进 ⇒ 事件已在介质」
+        # 的前提；缺 fsync 则断电可丢事件尾部而新基线仍在 → 结构性漏报。
+        ev_src = (Path(__file__).resolve().parent.parent
+                  / "core" / "events.py").read_text(encoding="utf-8")
+        imp_pos = ev_src.find("import os")
+        fs_pos = ev_src.find("os.fsync(fh.fileno())")
+        ret_pos = ev_src.find("return appended, skipped")
+        checks.append((0 < imp_pos < fs_pos < ret_pos,
+                       "I16 events.py 持久化屏障：append_events 返回前 fsync（静态断言）"))
 
         # ---------- I8: 历史不清空——多轮 JSONL 追加 + 重启读取 ----------
         evs = load_events(tmp, "202610")

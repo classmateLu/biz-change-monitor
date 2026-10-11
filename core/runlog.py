@@ -20,13 +20,17 @@
     validation_errors 完整性校验失败原因
 - 运行记录不自动删除（保留期限待业务定，不擅自清理）
 
-持久性保证的如实区分（终审二轮 §2-5）：
+持久性保证的如实区分（终审二轮 §2-5，终审三轮 §3 修订）：
 - **进程异常退出**（SIGKILL/异常，OS 存活）：write + close 后数据已在
   内核页缓存，进程死亡不影响——后续读取可见。
-- **操作系统崩溃/断电**：append_run_record 额外 fsync，运行记录在函数
-  返回前已落盘介质，断电不丢。events.py（core/events.py）目前仅
-  close-flush：进程崩溃级保证，断电可能丢尾部事件——但事件可由下一轮
-  以旧基线重 diff + 内容幂等键重建（无漏报），故不依赖断电级持久。
+- **操作系统崩溃/断电**：append_run_record 与 append_events 均在函数
+  返回前 fsync（新建文件额外 fsync 目录条目）——两份日志在返回时已
+  落介质，断电不丢。**持久化顺序**：事件文件 fsync 完成后才可能执行
+  快照/latest 更新，故 GPT 指出的「事件尾部丢失但新基线已持久化 →
+  下一轮以新基线比对 → 漏报」故障序列结构上不可能发生。
+- latest/快照为 tmp+os.replace 原子写（进程级）：断电取旧值或新值、
+  绝无半态；任一结果均安全（用旧基线重 diff，内容幂等键吸收），
+  不依赖介质级持久。
 """
 from __future__ import annotations
 
@@ -53,8 +57,9 @@ def append_run_record(root, record: dict) -> Path:
 
     path = runlog_dir(root) / f"runlog-{month}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
+    created = not path.exists()
     # 崩溃残留半行隔离（同 core/events.py 的 I4 修复）：防新记录拼接到半行上
-    if path.exists() and path.stat().st_size > 0:
+    if not created and path.stat().st_size > 0:
         with path.open("rb") as fh:
             fh.seek(-1, 2)
             if fh.read(1) != b"\n":
@@ -66,7 +71,23 @@ def append_run_record(root, record: dict) -> Path:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
         fh.flush()
         os.fsync(fh.fileno())  # 断电/内核崩溃下也持久（进程崩溃本就由 close 保证）
+    if created:
+        _fsync_dir(path.parent)  # 新建文件：目录条目也要持久（断电下文件名不丢）
     return path
+
+
+def _fsync_dir(path: Path) -> None:
+    """目录 fsync（同 core/events.py）：新建文件后同步目录条目。"""
+    try:
+        dfd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dfd)
+    except OSError:
+        pass
+    finally:
+        os.close(dfd)
 
 
 def load_run_records(root, month: str) -> list[dict]:
@@ -95,6 +116,10 @@ def recover_pending_runs(root, now=None) -> list[str]:
         committed  提交流程全部完成（事件落盘+latest 更新+归档）后写入
         failed     校验失败/同步拒绝/同步失败等受控退出
 
+    跨月恢复（终审三轮 §4）：同时扫描**上一个月**与当前月的日志——
+    月末留下的 pending 在月初第一次运行时也能被发现（旧月在前、
+    当前月覆盖，与 JSONL 末条为准语义一致）。
+
     提交流程保证「事件先于 latest 落盘」+ 内容幂等 event_id（不含 run_id：
     同一基线对之间的同一变化，无论哪个 run 观测都去重为同一事件），因此
     pending 运行无需数据修复：下一轮以旧基线重新比对，同样变化再次发现时
@@ -105,7 +130,12 @@ def recover_pending_runs(root, now=None) -> list[str]:
         from datetime import datetime
         now = datetime.now().astimezone()
     month = now.strftime("%Y%m")
-    records = load_run_records(root, month)
+    prev_year, prev_m = ((now.year - 1, 12) if now.month == 1
+                         else (now.year, now.month - 1))
+    prev_month = f"{prev_year}{prev_m:02d}"
+    # 旧月在前、当前月在后：同 run_id 跨月出现时以较新记录为准
+    records = (load_run_records(root, prev_month)
+               + load_run_records(root, month))
     last_status: dict[str, str] = {}
     for r in records:
         rid, st = r.get("run_id"), r.get("status")

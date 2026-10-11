@@ -9,10 +9,19 @@
   （存储层自身防重，不依赖通知层）
 - 崩溃安全：每行独立 JSON + 换行；进程中断最坏留下半行，
   读取时跳过损坏行并告警，不影响其余数据
+- 持久化屏障（终审三轮 §3）：append_events 返回前对事件文件 fsync
+  ——「事件已落介质」先于「快照/latest 更新」成立。断电场景下，
+  GPT 指出的故障序列（事件尾部丢失但新基线已持久化 → 下一轮以新
+  基线比对 → 原变化漏报）**在结构上不可能发生**：基线更新的前提是
+  append_events 已完整返回。新建文件额外 fsync 目录（文件名条目
+  同步持久）。latest/快照本身维持 tmp+os.replace（进程级原子）：
+  断电时取旧值或新值、绝无半态——任一结果都安全（丢了就是用旧
+  基线重 diff，内容幂等键吸收），不需要介质级保证。
 """
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 
@@ -65,9 +74,31 @@ def _ensure_trailing_newline(path: Path) -> None:
                   flush=True)
 
 
+def _fsync_dir(path: Path) -> None:
+    """目录 fsync：新建文件后同步目录条目（断电下文件名也持久）。
+
+    仅 fsync 文件本身不保证其目录项已持久——首次创建 events-YYYYMM.jsonl
+    后必须同步父目录，否则断电可能"数据在、文件名丢"。
+    个别文件系统不支持目录 fsync 时静默降级（进程级保证仍在）。
+    """
+    try:
+        dfd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dfd)
+    except OSError:
+        pass
+    finally:
+        os.close(dfd)
+
+
 def append_events(root, events: list[dict], today: str = "") -> tuple[int, int]:
     """把变化事件追加落盘（按月分区 + event_id 去重）。
 
+    持久化屏障：返回前事件文件已 fsync——调用方（main.py）只有在
+    本函数完整返回后才会推进快照/latest，故「基线已推进 ⇒ 事件已在
+    介质上」恒成立（终审三轮 §3）。
     返回 (新增条数, 去重跳过条数)。
     """
     appended = skipped = 0
@@ -79,9 +110,10 @@ def append_events(root, events: list[dict], today: str = "") -> tuple[int, int]:
 
     for month, evs in by_month.items():
         path = _month_file(root, month)
-        _ensure_trailing_newline(path)
-        existing = _load_existing_ids(path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_trailing_newline(path)
+        created = not path.exists()
+        existing = _load_existing_ids(path)
         with path.open("a", encoding="utf-8") as fh:
             for ev in evs:
                 eid = ev.get("event_id")
@@ -92,6 +124,10 @@ def append_events(root, events: list[dict], today: str = "") -> tuple[int, int]:
                 if eid:
                     existing.add(eid)
                 appended += 1
+            fh.flush()
+            os.fsync(fh.fileno())  # 持久化屏障：事件先于基线更新落介质
+        if created:
+            _fsync_dir(path.parent)
     return appended, skipped
 
 
