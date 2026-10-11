@@ -80,12 +80,43 @@ def runs_dir(root) -> Path:
     return Path(root) / "data" / "snapshots" / "runs"
 
 
+def _fsync_dir(path: Path) -> None:
+    """目录 fsync：改名/新建文件后同步目录条目（终审四轮 §顺序）。
+
+    os.replace 的改名操作也依赖目录条目持久化——仅 fsync 文件不保证
+    断电后改名生效。个别文件系统（网络挂载/FAT 等）不支持目录 fsync
+    时静默降级（进程级保证仍在，见模块末尾持久性声明）。
+    """
+    try:
+        dfd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dfd)
+    except OSError:
+        pass
+    finally:
+        os.close(dfd)
+
+
 def _atomic_write_json(path: Path, payload) -> None:
+    """原子写 JSON（终审四轮 §顺序定稿，四步顺序固定）：
+
+        ① 写临时文件 → ② fsync 临时文件（内容先落介质）
+        → ③ os.replace 原子改名 → ④ fsync 目录（改名条目持久）
+
+    断电语义：任一步之前断电 → 旧文件原样在（tmp 残留无害，回退扫描
+    已排除 .tmp_ 前缀）；③④ 之间断电 → 改名可能未持久 → 仍取旧值，
+    安全（用旧基线重 diff，内容幂等键吸收）。绝无半写状态。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".tmp_{path.name}")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, default=str),
-                   encoding="utf-8")
-    os.replace(tmp, path)
+    with tmp.open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload, ensure_ascii=False, default=str))
+        fh.flush()
+        os.fsync(fh.fileno())  # ② 内容先落介质
+    os.replace(tmp, path)      # ③ 原子改名
+    _fsync_dir(path.parent)    # ④ 改名条目持久
 
 
 def save_run_snapshot(root, run_id: str, observed_at: str, complete: bool,
@@ -149,6 +180,8 @@ def load_latest_valid(root, exclude_run_id: str | None = None):
 
     candidates: list[tuple[str, str, dict]] = []  # (observed_at, run_id, payload)
     for f in runs_dir(root).glob("*.json"):
+        if f.name.startswith(".tmp_"):
+            continue  # 原子写失败残留的临时文件（终审四轮 §F3）：不参与基线扫描
         try:
             payload = json.loads(f.read_text(encoding="utf-8"))
         except Exception as e:

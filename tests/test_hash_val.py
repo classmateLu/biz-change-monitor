@@ -19,6 +19,10 @@
     H10 None 与同名字符串严格不同键（None ≠ "None"，None ≠ "null"）
     H11 字典键类型保留：{1: x} ≠ {"1": x}，{None: x} ≠ {"None": x}
     H12 类型化编码的正向同键不回退（bool/None/字符串/数值互不混淆）
+    H13 数值精度边界（终审四轮 §1-2）：float 53 位与 int 按值等价
+    H14 容器等价决策（终审四轮 §1-3）：list/tuple/set 同元素同键、
+        多重性保留、嵌套一致
+    H15 不支持类型抛 UnsupportedHashValueError（终审四轮 §1-4）
 
 既可用 pytest 运行，也可直接执行：python tests/test_hash_val.py
 全部虚构数据，无 IO、无网络。
@@ -29,7 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.diff import _hash_val  # noqa: E402
+from core.diff import UnsupportedHashValueError, _hash_val  # noqa: E402
 
 
 def run_checks():
@@ -138,6 +142,57 @@ def run_checks():
     checks.append((_hash_val("") != _hash_val(None)
                    and _hash_val(None) != _hash_val("null"),
                    "H12 空串 / None / 'null' 三者互不同键"))
+
+    # ---------- H13: 数值精度边界（终审四轮 §1-2） ----------
+    # float 53 位精度边界：与 int 按**值**等价——值相同同键，值不同异键
+    checks.append((_hash_val(2**53) == _hash_val(float(2**53)),
+                   "H13 2^53 int ≡ float(2^53)（float 精确表示范围内，同值同键）"))
+    checks.append((_hash_val(2**53 + 1) != _hash_val(float(2**53 + 1)),
+                   "H13 2^53+1 int ≠ float(2^53+1)（float 有损舍入为 2^53，"
+                   "值确实不同 → 异键是正确行为）"))
+    checks.append((_hash_val(2**53 + 1) == _hash_val(2**53 + 1),
+                   "H13 大 int 精确（str 往返无损）"))
+    checks.append((_hash_val(10**40) == _hash_val(Decimal(10**40))
+                   == _hash_val(float(10**40)),
+                   "H13 10^40 三表示同键（float 10^40 无损）"))
+    # 小数边界：float 0.1 与 Decimal('0.1') 同值同键（str 往返一致）
+    checks.append((_hash_val(0.1) == _hash_val(Decimal("0.1")),
+                   "H13 0.1 float ≡ Decimal('0.1')"))
+
+    # ---------- H14: 容器等价决策（终审四轮 §1-3） ----------
+    checks.append((_hash_val([1, 2]) == _hash_val((1, 2)) == _hash_val({2, 1})
+                   == _hash_val(frozenset({1, 2})),
+                   "H14 list/tuple/set/frozenset 同元素同键（等价容器）"))
+    checks.append((_hash_val([1, 1]) != _hash_val({1}),
+                   "H14 多重性保留：[1,1] ≠ {1}（list 多重集，set 去重）"))
+    checks.append((_hash_val(["a"]) == _hash_val(("a",)) == _hash_val({"a"}),
+                   "H14 字符串元素同样三容器等价"))
+    checks.append((_hash_val([[1], [2]]) == _hash_val([(1,), (2,)]),
+                   "H14 嵌套容器递归等价（[1] ≡ (1,)）"))
+    checks.append((_hash_val([1, 2]) != _hash_val([1, 2, 2]),
+                   "H14 元素个数不同 → 不同键"))
+
+    # ---------- H15: 不支持类型显式失败（终审四轮 §1-4） ----------
+    from datetime import datetime as _dt
+    for bad, label in (
+            (_dt(2026, 10, 11), "datetime"),
+            (b"bytes", "bytes"),
+            (object(), "object"),
+            (complex(1, 2), "complex"),
+    ):
+        try:
+            _hash_val(bad)
+            checks.append((False, f"H15 {label} 应抛 UnsupportedHashValueError"))
+        except UnsupportedHashValueError:
+            checks.append((True, f"H15 {label} → UnsupportedHashValueError（不用 str 兜底）"))
+        except Exception:
+            checks.append((False, f"H15 {label} 抛了错误类型的异常"))
+    # 数字键值对里混入不支持类型同样失败（fail-closed 贯穿递归）
+    try:
+        _hash_val({"k": _dt(2026, 10, 11)})
+        checks.append((False, "H15 嵌套 datetime 应抛异常"))
+    except UnsupportedHashValueError:
+        checks.append((True, "H15 嵌套容器内不支持类型同样抛异常（递归 fail-closed）"))
 
     return checks
 

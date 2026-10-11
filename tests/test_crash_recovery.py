@@ -23,6 +23,7 @@
     I14 数值表示漂移（11 vs 11.0）→ 同一变化同 event_id（合并前终检 §1 复核项）
     I15 跨月崩溃恢复：上月遗留 pending 在本月首次运行可被发现（终审三轮 §4）
     I16 事件持久化屏障静态断言：append_events 返回前 fsync（终审三轮 §3）
+    I17 原子写四步顺序静态断言：tmp→fsync→replace→目录fsync（终审四轮）
 
 既可用 pytest 运行，也可直接执行：python tests/test_crash_recovery.py
 全部虚构数据，隔离在临时目录。
@@ -325,6 +326,19 @@ def run_checks():
         ret_pos = ev_src.find("return appended, skipped")
         checks.append((0 < imp_pos < fs_pos < ret_pos,
                        "I16 events.py 持久化屏障：append_events 返回前 fsync（静态断言）"))
+
+        # ---------- I17: 原子写顺序静态断言（终审四轮 §顺序） ----------
+        # snapshot.py 的 _atomic_write_json 必须保持四步顺序：
+        # 写 tmp → fsync tmp（内容落介质）→ os.replace（原子改名）→ fsync 目录
+        snap_src = (Path(__file__).resolve().parent.parent
+                    / "core" / "snapshot.py").read_text(encoding="utf-8")
+        wr_pos = snap_src.find('with tmp.open("w"')
+        sfs_pos = snap_src.find("os.fsync(fh.fileno())")
+        rep_pos = snap_src.find("os.replace(tmp, path)")
+        dfs_pos = snap_src.find("_fsync_dir(path.parent)")
+        checks.append((0 < wr_pos < sfs_pos < rep_pos < dfs_pos,
+                       "I17 原子写四步顺序：写tmp → fsync → replace → 目录fsync"
+                       "（静态断言，防回归乱序）"))
 
         # ---------- I8: 历史不清空——多轮 JSONL 追加 + 重启读取 ----------
         evs = load_events(tmp, "202610")

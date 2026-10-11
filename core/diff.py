@@ -82,27 +82,48 @@ def _num_repr(d: Decimal) -> str:
     return s
 
 
+class UnsupportedHashValueError(TypeError):
+    """_hash_val 收到不支持类型时抛出（fail-closed，终审四轮 §1-4）。
+
+    旧实现曾用 str() 兜底——任意对象静默转字符串，存在与原生类型
+    碰撞的可能且掩盖数据结构异常。现在：不支持类型显式失败，
+    把适配器/数据源的结构问题在最早期暴露，而不是静默生成有碰撞
+    风险的键。
+    """
+
+
 def _hash_val(v) -> str:
-    """幂等键用的稳定序列化（终审三轮 §1 修订：**类型化编码**）。
+    """幂等键用的稳定序列化——**支持类型规格**（终审四轮 §1 定稿）。
 
-    每种类型有独立编码空间，跨类型不碰撞：
-    - None        → "null"（裸字面量，与字符串 "null"（→ '"null"'）不同键）
-    - bool        → "true"/"false"（裸字面量）
-    - 数值（int/float/Decimal，排除 bool）→ 精确十进制展开 + 末尾零剥离
-      （裸数字字面量）——11 与 11.0 与 Decimal("11.00") 同值同键；
-      0/-0.0 归一为 "0"；**不使用 normalize()**（其应用 context precision，
-      默认 28 位有效数字，≥29 位输入会发生舍入）
-    - 字符串      → JSON 字符串字面量（带引号转义，永不与裸字面量混淆）
-    - 列表/元组/集合 → 元素逐一递归规范后按字符串排序（顺序无关）
-    - 字典        → 键**按原类型**递归规范后排序，值递归规范（键序无关；
-      数字键 1 → "1" 与字符串键 "1" → '"1"' 不同键）
-    - 其他对象    → "obj:" + 类型名 + JSON(str(v))（带类型标签，
-      避免 str() 后与原生类型碰撞）
+    【支持的类型与规范化规则】
+    - None   → "null"（裸字面量；字符串 "null" → '"null"'，不同键）
+    - bool   → "true"/"false"（裸字面量；先于数值判断，True ≠ 1）
+    - int/float/Decimal → 精确十进制展开 + 末尾零剥离（裸数字字面量）：
+        * int：任意大小，str() 往返无损，精确
+        * float：str() 为最短往返表示（repr）；同值 float 必同键；
+          0.0/-0.0 归 "0"；精度边界 53 位——与 int 按**值**等价
+          （2**53 == float(2**53) 同键；2**53+1 与 float(2**53+1)
+          不同键——后者实际等于 2**53，值确实不同，键不同是正确行为）
+        * Decimal：str() 往返精确，任意精度；科学计数法与展开表示
+          同键（Decimal("1E+1") ≡ Decimal("10") → "10"）
+        * NaN/Infinity：归一为 "NaN"/"Infinity"（确定性成立，但语义上
+          与任何数值不等价；业务字段不会产生——canon_number 对 NaN
+          量化失败 → None → 走缺失语义）
+        * 已知边界（如实声明）：format(d, "f") 对极端指数（|adjusted
+          exponent| > ~10^5）产生线性长度字符串，消耗内存/时间——
+          当前业务字段（价格/份数/折扣）不会出现，未设防御上限
+    - str     → JSON 字符串字面量（带引号转义，永不与裸字面量混淆）
+    - list/tuple/set/frozenset → **等价容器**（终审四轮 §1-3 决策）：同一
+      编码"[" + 各元素键排序拼接 + "]"——四者同元素同键、顺序无关；
+      **多重性保留**（[1,1] ≠ [1] ≠ {1} 的去重结果不同键）
+    - dict    → 键按原类型递归规范后排序，值递归规范（键序无关、
+      键类型敏感：{1: x} ≠ {"1": x}）；键也必须是受支持类型
+    - 其他任何类型 → 抛 UnsupportedHashValueError（不用 str() 兜底）
 
-    无歧义论证：编码文法中每个叶子要么是**带引号转义的 JSON 字符串**
-    （自定界），要么是来自固定互斥字面量集 {null, true, false, 数字} 的
-    裸 token——四类裸 token 两两不重叠、且都不是合法 JSON 字符串的
-    开头，因此拼接/键值对结构不存在第二种解析方式。
+    【无歧义论证】每个叶子要么是带引号转义的 JSON 字符串（自定界），
+    要么是固定互斥字面量集 {null, true, false, 数字} 的裸 token——
+    四类裸 token 两两不重叠、且都不是合法 JSON 字符串的开头，因此
+    拼接/键值对结构不存在第二种解析方式。
     全部确定性：同一逻辑值跨运行、跨环境、跨表示得到同一字符串。
     """
     if v is None:
@@ -113,12 +134,14 @@ def _hash_val(v) -> str:
         return _num_repr(Decimal(str(v)))
     if isinstance(v, str):
         return json.dumps(v, ensure_ascii=False)
-    if isinstance(v, (list, tuple, set)):
+    if isinstance(v, (list, tuple, set, frozenset)):
         return "[" + ",".join(sorted(_hash_val(e) for e in v)) + "]"
     if isinstance(v, dict):
         pairs = sorted((_hash_val(k), _hash_val(val)) for k, val in v.items())
         return "{" + ",".join(f"{k}:{h}" for k, h in pairs) + "}"
-    return f"obj:{type(v).__name__}:" + json.dumps(str(v), ensure_ascii=False)
+    raise UnsupportedHashValueError(
+        f"_hash_val 不支持类型 {type(v).__name__!r}（fail-closed，"
+        f"请先在适配器层转换为受支持类型：{v!r}）")
 
 
 def _content_event_id(gid: str, field: str, event_type: str,
