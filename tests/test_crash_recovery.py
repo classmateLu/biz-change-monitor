@@ -5,9 +5,9 @@
 核心不变式（提交顺序保证）：
     diff(内存) → 事件落盘 → 快照留证 → latest 更新 → 归档
     ⇒ 任何步骤崩溃后，"latest 已更新但事件缺失"的中间态不存在；
-      事件落盘后崩溃 → 重跑以旧基线重 diff，event_id 幂等吸收 → 无漏报无重复。
+      事件落盘后崩溃 → 重跑以旧基线重 diff，内容幂等 event_id 吸收 → 无漏报无重复。
 
-注入点（按 GPT 要求逐步骤边界）：
+注入点（按 GPT 要求逐步骤边界；I9-I12 为合并前终审补充）：
     I1 事件落盘后、latest 更新前崩溃 → 重跑恢复
     I2 latest 更新后崩溃 → 事件必然已在（顺序不变式）
     I3 latest.json 损坏/.schema 无效 → 回退扫描 runs/
@@ -15,6 +15,10 @@
     I5 update_latest 拒绝不完整载荷 → 旧 latest 原样可用
     I6 pending/committed 状态机 → recover_pending_runs 识别
     I7 提交顺序静态断言（main.py 源码，防回归移除）
+    I9 跨 run_id 再观测同一变化（同基线对）→ 内容幂等键去重，无重复行
+    I10 不同基线对之间的真实变化 → 各自成事件（去重不漏报）
+    I11 未提交运行：latest 有效时不越级当基线；回退时 pending-but-complete 快照安全可用
+    I12 重启后重复恢复扫描幂等（结果一致、数据不变）
 
 既可用 pytest 运行，也可直接执行：python tests/test_crash_recovery.py
 全部虚构数据，隔离在临时目录。
@@ -95,17 +99,22 @@ def run_checks():
         checks.append((sum(1 for e in evs if e.get("run_id") == "run-B") == 1,
                        "I1 崩溃时 run-B 事件已持久化（重放种子在盘）"))
 
-        # 【恢复】重跑同一轮（新 run_id，同一批数据）：以旧基线重 diff，
-        # 同样变化再次发现 → event_id 不同（run_id 参与哈希）但旧事件仍保留；
-        # 关键断言：无任何事件丢失，latest 最终推进到新轮
+        # 【恢复】重跑同一轮（新 run_id run-B2，同一批数据）：以旧基线（run-A）重 diff。
+        # 合并前终审 §1.3 修订：event_id 为内容幂等键（不含 run_id）——同一基线对
+        # 之间的同一变化，无论哪个 run 观测 → 同一 event_id → 落盘去重（无重复行）。
         items_b2 = [make_item("G-000", name="对象0", price=99)] + items_a[1:]
         rid_prev, payload_prev = load_latest_valid(tmp, exclude_run_id="run-B2")
+        checks.append((rid_prev == "run-A",
+                       "I1 恢复轮基线仍是 run-A（latest 未被崩溃污染）"))
         changes_b2 = _commit_prefix(tmp, "run-B2", OBS_B, items_b2, payload_prev)
         _commit_suffix(tmp, "run-B2", OBS_B, items_b2)
         evs = load_events(tmp, "202610")
         price_events = [e for e in evs if e.get("field") == "price"]
-        checks.append((len(changes_b2) == 1 and len(price_events) == 2,
-                       "I1 恢复轮重新检出同一变化（旧事件不丢，不静默合并）"))
+        checks.append((len(changes_b2) == 1 and len(price_events) == 1,
+                       "I9 跨 run_id 再观测同一变化（同基线对）：去重后仅一行（无重复行）"))
+        checks.append((changes_b2[0]["event_id"] == price_events[0]["event_id"]
+                       and price_events[0].get("run_id") == "run-B",
+                       "I9 内容幂等键跨 run 相同；run_id 保留首次发现者（溯源不丢）"))
         rid_final, _ = load_latest_valid(tmp)
         checks.append((rid_final == "run-B2",
                        "I1 恢复轮后 latest 推进到 run-B2"))
@@ -127,6 +136,24 @@ def run_checks():
         c_event_ids = {e["event_id"] for e in changes_c}
         checks.append((rid_final == "run-C" and c_event_ids <= ev_ids_on_disk,
                        "I2 不变式：latest 指向 run-C 时其事件必已全部落盘"))
+
+        # ---------- I10: 不同基线对之间的真实变化 → 各自成事件（去重不漏报） ----------
+        # 崩溃形态：G-001 价格 11→12 事件已落盘，快照/latest 未写（prefix-only）
+        items_c3 = items_c[:1] + [make_item("G-001", name="对象1", price=12)] + items_c[2:]
+        _, payload_c3 = load_latest_valid(tmp, exclude_run_id="run-C3")
+        changes_c3 = _commit_prefix(tmp, "run-C3", OBS_B, items_c3, payload_c3)
+        g1_events = [e for e in load_events(tmp, "202610")
+                     if e.get("gid") == "G-001" and e.get("field") == "price"]
+        checks.append((len(changes_c3) == 1 and len(g1_events) == 1
+                       and g1_events[0]["previous_observed_at"] == OBS_B,
+                       "I10a 不同基线对的真实变化落盘为新事件（previous_observed_at=新基线）"))
+        # 恢复轮（新 run_id run-C4）对同一基线对再检出同一变化 → 内容键去重，不新增行
+        _, payload_c4 = load_latest_valid(tmp, exclude_run_id="run-C4")
+        _commit_prefix(tmp, "run-C4", OBS_B, items_c3, payload_c4)
+        g1_events = [e for e in load_events(tmp, "202610")
+                     if e.get("gid") == "G-001" and e.get("field") == "price"]
+        checks.append((len(g1_events) == 1,
+                       "I10b 跨 run_id 再观测（同基线对）：内容幂等键去重，仍一行"))
 
         # ---------- I3: latest 损坏 / schema 无效 → 回退扫描 ----------
         latest_path = tmp / "data" / "snapshots" / "latest.json"
@@ -188,6 +215,32 @@ def run_checks():
         pending = recover_pending_runs(tmp, now=datetime(2026, 10, 10, 10, 7).astimezone())
         checks.append((pending == ["run-E"],
                        "I6 runlog 半行容错：恢复扫描不受影响"))
+
+        # ---------- I11: 未提交运行不被误当已提交（快照已存、latest 未更新的崩溃形态） ----------
+        # run-E 状态机为 pending；其完整快照已留证（崩溃发生在 latest 更新前）
+        save_run_snapshot(tmp, "run-E", "2026-10-10T10:04:30+08:00", True,
+                          items=items_c, total=len(items_c))
+        rid_now, _ = load_latest_valid(tmp)
+        checks.append((rid_now == "run-C",
+                       "I11 latest 有效时基线仍取已提交轮（pending 轮不越级充当基线）"))
+        # 回退场景：latest 失效时，pending-but-complete 快照可被选为基线——
+        # 安全性由提交顺序保证（事件先于快照落盘 ⇒ 该快照对应事件必已在盘），
+        # 且快照数据本身已通过第一道完整性闸门（complete=true 由闸门后写入）
+        latest_path2 = tmp / "data" / "snapshots" / "latest.json"
+        backup2 = latest_path2.read_text(encoding="utf-8")
+        latest_path2.write_text("{broken", encoding="utf-8")
+        rid_fb, _ = load_latest_valid(tmp)
+        latest_path2.write_text(backup2, encoding="utf-8")
+        checks.append((rid_fb == "run-E",
+                       "I11b 回退扫描按 (observed_at, run_id) 确定性选取（pending-but-complete 快照安全可用）"))
+
+        # ---------- I12: 重启后重复恢复扫描幂等 ----------
+        evs_before = load_events(tmp, "202610")
+        p1 = recover_pending_runs(tmp, now=datetime(2026, 10, 10, 10, 8).astimezone())
+        p2 = recover_pending_runs(tmp, now=datetime(2026, 10, 10, 10, 9).astimezone())
+        evs_after = load_events(tmp, "202610")
+        checks.append((p1 == p2 == ["run-E"] and evs_before == evs_after,
+                       "I12 重复恢复扫描幂等：结果一致、事件数据不变"))
 
         # ---------- I7: 提交顺序静态断言（防回归移除顺序） ----------
         main_src = (Path(__file__).resolve().parent.parent / "main.py").read_text(

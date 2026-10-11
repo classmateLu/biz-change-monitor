@@ -8,6 +8,8 @@ B 无效差异防护：数字格式/缺失vs零值/重复扫描/顺序变化/同
 C 完整性与失败恢复：不完整不覆盖基线、不产生删除、失败后恢复、损坏跳过
 D 事件幂等：重复落盘去重
 E 存储与归档：latest 只在完整时更新、归档间隔、不完整不归档、重启续用基线
+F 必需字段结构校验（终审 P0-2）/ G 字段级精度（P1-1）/ H 并发（P1-3）
+J 可选监控字段键消失告警（合并前终审 §3）/ K 基线回退确定性排序（§2）
 
 既可用 pytest 运行，也可直接执行：python tests/test_stage2.py
 全部虚构数据，隔离在临时目录。
@@ -343,6 +345,66 @@ def run_checks():
         main_body = main_src.split("def main()", 1)[-1]
         checks.append(("acquire_lock()" in main_body,
                        "H main() 入口调用 acquire_lock（静态断言防回归）"))
+
+        # ================= J. 可选监控字段键消失（合并前终审 §3） =================
+        # 键不存在 ≠ 值 None：键消失是数据源/适配器结构变化信号，必须告警不静默
+        old_d = {"A": make_item("A", name="X", price=10, discount=20)}
+        ch = diff_changes(old_d, {"A": make_item("A", name="X", price=10)},
+                          None, None, date="T")
+        mk = [c for c in ch if c["type"] == "discount_missing"]
+        checks.append((len(mk) == 1 and mk[0]["old_value"] == 20
+                       and mk[0]["new_value"] is None,
+                       "J discount 键消失 → discount_missing 告警（键缺失≠值缺失）"))
+        # J2: 键在但值 None（原始字典显式构造；make_item 已不写 None 键）→ 缺失值 ≠ 变化
+        new_none = {"A": {"gid": "A", "name": "X", "price": 10, "discount": None}}
+        ch = diff_changes(old_d, new_none, None, None, date="T")
+        checks.append((not any(c["type"].endswith("_missing") for c in ch),
+                       "J discount 值 None（键存在）→ 不告警（缺失值≠变化）"))
+        # J3: 四个可选字段键同时消失 → 各自独立告警事件
+        old_full = {"A": make_item("A", name="X", price=10, unit_price=50,
+                                   discount=20, status="上架", store_count=3)}
+        ch = diff_changes(old_full, {"A": make_item("A", name="X", price=10)},
+                          None, None, date="T")
+        got_missing = {c["type"] for c in ch}
+        checks.append((got_missing == {"unit_price_missing", "discount_missing",
+                                       "status_missing", "store_count_missing"},
+                       f"J 四个可选字段键同时消失 → 各自 _missing 告警（got {got_missing}）"))
+        # J4: 双方键都缺失 → 零事件
+        ch = diff_changes({"A": make_item("A", name="X", price=10)},
+                          {"A": make_item("A", name="X", price=10)},
+                          None, None, date="T")
+        checks.append((len(ch) == 0, "J 双方键都缺失 → 零事件"))
+        # J5: 旧缺键、新有值 → 零事件（字段出现非业务变化，不虚构方向；文档化规则）
+        ch = diff_changes({"A": make_item("A", name="X", price=10)},
+                          old_full, None, None, date="T")
+        checks.append((len(ch) == 0, "J 旧缺键新有值 → 零事件（文档化规则）"))
+        # J6: 键消失事件内容幂等——不同 run_id（同基线对）生成同一 event_id
+        e1 = diff_changes(old_d, {"A": make_item("A", name="X", price=10)},
+                          None, None, date="T", run_id="RX",
+                          observed_at="2026-10-10T22:00:00+08:00",
+                          previous_observed_at="2026-10-10T21:00:00+08:00")
+        e2 = diff_changes(old_d, {"A": make_item("A", name="X", price=10)},
+                          None, None, date="T", run_id="RY",
+                          observed_at="2026-10-10T23:00:00+08:00",
+                          previous_observed_at="2026-10-10T21:00:00+08:00")
+        checks.append((e1 and e2 and e1[0]["event_id"] == e2[0]["event_id"],
+                       "J 同基线对键消失：不同 run_id 同 event_id（跨 run 去重）"))
+
+        # ================= K. 基线回退确定性排序（合并前终审 §2） =================
+        k_tmp = Path(tempfile.mkdtemp(prefix="bizmon-stage2-k-"))
+        try:
+            items_k1 = [make_item("K-001", name="对象", price=10)]
+            items_k2 = [make_item("K-001", name="对象", price=11)]  # 同秒不同内容
+            same_t = "2026-10-10T12:00:00+08:00"
+            save_run_snapshot(k_tmp, "run-K2", same_t, True, items=items_k2, total=1)
+            save_run_snapshot(k_tmp, "run-K1", same_t, True, items=items_k1, total=1)
+            rid, payload = load_latest_valid(k_tmp)
+            checks.append((rid == "run-K2" and payload["items"][0]["price"] == 11,
+                           "K 同秒多轮不同内容：确定性取 (observed_at, run_id) 最大者"
+                           "（与写入/遍历顺序无关）"))
+        finally:
+            import shutil
+            shutil.rmtree(k_tmp, ignore_errors=True)
     finally:
         import shutil
         shutil.rmtree(tmp, ignore_errors=True)

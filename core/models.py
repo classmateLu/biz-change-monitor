@@ -15,8 +15,9 @@ Item 字段：
     store_count 门店数量（可缺省；与 stores 集合独立，未采集详情时也可提供）
     extra       其他平台特有字段（原样携带，核心引擎不解释）
 
-缺失语义约定（v2，与需求一一对应）：
-    None / 空串   → 字段缺失（缺失 ≠ 零值 ≠ 变化）
+缺失语义约定（v2 + 合并前终审 §3 细化，与需求一一对应）：
+    键不存在     → 字段未提供（此前有值时 diff 触发 _missing 结构告警）
+    None / 空串  → 缺失值（缺失 ≠ 零值 ≠ 变化；make_item 不写 None 键）
     0            → 真实业务值"零"，参与比对
     数值比较统一走 canon_number（Decimal 定点），避免浮点近似比较
 
@@ -42,17 +43,19 @@ REQUIRED_ITEM_FIELDS = ("gid", "name", "price")
 
 def make_item(gid, name=None, price=None, count=None, unit_price=None,
               discount=None, status=None, store_count=None, **extra) -> dict:
-    """构造一个归一化 item。gid 强制转字符串（平台侧可能是数字）。"""
-    it: dict[str, Any] = {
-        "gid": str(gid),
-        "name": name,
-        "price": price,
-        "count": count,
-        "unit_price": unit_price,
-        "discount": discount,
-        "status": status,
-        "store_count": store_count,
-    }
+    """构造一个归一化 item。gid 强制转字符串（平台侧可能是数字）。
+
+    键存在性语义（合并前终审 §3）：未提供（None）的**可选字段不写入键**——
+    键不存在 = 适配器未提供该字段（此前有值时可在 diff 触发 _missing 结构告警，
+    用于感知数据源结构变化）；空串 = 显式合法空值。两种形态刻意区分，
+    绝不用 None 键值掩蔽"字段消失"信号。
+    """
+    it: dict[str, Any] = {"gid": str(gid)}
+    for key, val in (("name", name), ("price", price), ("count", count),
+                     ("unit_price", unit_price), ("discount", discount),
+                     ("status", status), ("store_count", store_count)):
+        if val is not None:
+            it[key] = val
     if extra:
         it["extra"] = extra
     return it

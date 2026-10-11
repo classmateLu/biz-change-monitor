@@ -127,7 +127,8 @@ def load_latest_valid(root, exclude_run_id: str | None = None):
     """最近一份有效完整基线。返回 (run_id, payload)；没有返回 (None, None)。
 
     优先读 latest.json；损坏/不完整时回退扫描 runs/*.json（complete=true），
-    取 observed_at 最大者。损坏文件跳过并告警。
+    按 (observed_at, run_id) 确定性排序取最大者（同秒多轮取 run_id 更大者）。
+    损坏文件跳过并告警。
     exclude_run_id：排除当前运行自身（防止本轮快照充当自己的基线）。
     """
     latest_path = Path(root) / "data" / "snapshots" / "latest.json"
@@ -146,8 +147,8 @@ def load_latest_valid(root, exclude_run_id: str | None = None):
         except Exception as e:
             print(f"⚠️ latest.json 损坏已忽略，回退扫描运行快照: {e}", flush=True)
 
-    best = None  # (observed_at, run_id, payload)
-    for f in sorted(runs_dir(root).glob("*.json")):
+    candidates: list[tuple[str, str, dict]] = []  # (observed_at, run_id, payload)
+    for f in runs_dir(root).glob("*.json"):
         try:
             payload = json.loads(f.read_text(encoding="utf-8"))
         except Exception as e:
@@ -159,14 +160,19 @@ def load_latest_valid(root, exclude_run_id: str | None = None):
             continue
         if exclude_run_id and payload.get("run_id") == exclude_run_id:
             continue
-        obs = payload.get("observed_at") or ""
-        # 同一观测时刻多轮时（分钟级可能发生），取扫描顺序中更后者
-        # （文件名字典序 = run_id 时间戳前缀顺序，近似最新）
-        if best is None or obs >= best[0]:
-            best = (obs, payload.get("run_id"), payload)
-    if best is None:
+        candidates.append((str(payload.get("observed_at") or ""),
+                           str(payload.get("run_id") or f.stem), payload))
+    if not candidates:
         return None, None
-    return best[1], best[2]
+    # 确定性排序（合并前终审 §2）：主键 observed_at、次键 run_id（字典序），
+    # 不依赖文件系统遍历顺序——同观测时刻多轮取 run_id 更大者，结果可复现
+    candidates.sort(key=lambda c: (c[0], c[1]))
+    obs, rid, payload = candidates[-1]
+    ties = sorted(c[1] for c in candidates if c[0] == obs and c[1] != rid)
+    if ties:
+        print(f"⚠️ 同一观测时刻存在 {len(ties) + 1} 轮完整快照"
+              f"（{rid} 与 {', '.join(ties)}），已按确定性规则取 {rid}", flush=True)
+    return rid, payload
 
 
 def archive_if_due(root, run_payload: dict, interval_minutes: int = 60,

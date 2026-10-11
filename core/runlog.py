@@ -84,10 +84,11 @@ def recover_pending_runs(root, now=None) -> list[str]:
         committed  提交流程全部完成（事件落盘+latest 更新+归档）后写入
         failed     校验失败/同步拒绝/同步失败等受控退出
 
-    提交流程保证「事件先于 latest 落盘」+ event_id 幂等，因此 pending 运行
-    无需数据修复：下一轮以旧基线重新比对，同样变化再次发现时被幂等吸收——
-    无漏报、无重复。本函数只负责**识别与告警**，供人工知晓中断区间。
-    返回 pending 的 run_id 列表。
+    提交流程保证「事件先于 latest 落盘」+ 内容幂等 event_id（不含 run_id：
+    同一基线对之间的同一变化，无论哪个 run 观测都去重为同一事件），因此
+    pending 运行无需数据修复：下一轮以旧基线重新比对，同样变化再次发现时
+    被内容键吸收——无漏报、无重复行。本函数只负责**识别与告警**，
+    供人工知晓中断区间。返回 pending 的 run_id 列表。
     """
     if now is None:
         from datetime import datetime
