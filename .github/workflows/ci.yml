@@ -17,11 +17,18 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install pyyaml
-      # 全部测试套件：diff 引擎 + 钉钉同步安全 + 主流程安全（默认零写入等）
+      # 全部 7 套测试（与 README 宣称一致）：diff 引擎 / 钉钉同步 / 主流程安全
+      # / 崩溃恢复 / 故障注入 / 哈希规格 / 阶段2 数据引擎；任一套失败即 CI 失败
       - run: |
           python tests/test_diff.py
           python tests/test_dingtalk_sync.py
           python tests/test_main_safety.py
+          python tests/test_crash_recovery.py
+          python tests/test_fault_injection.py
+          python tests/test_hash_val.py
+          python tests/test_stage2.py
+      - name: Reproducible demo smoke test
+        run: python run_demo.py > /dev/null
       - name: Example pipeline smoke test (dry-run)
         run: |
           python main.py --date 2099-01-01

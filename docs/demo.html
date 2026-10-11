@@ -124,7 +124,7 @@
         本页为模拟数据演示
       </span>
     </h1>
-    <div class="en">A business data change monitoring and reconciliation automation tool. 本页所有数据均为虚构；Diff 引擎、快照与校验为仓库真实代码运行结果（2026-10-06）。</div>
+    <div class="en">A business data change monitoring and reconciliation automation tool. 本页所有数据均为虚构；Diff 引擎、快照与校验为仓库真实代码运行结果，<code>python run_demo.py</code> 可一键复现。</div>
 
     <div class="trio">
       <div class="q">
@@ -153,7 +153,7 @@
       <div class="farrow">→</div>
       <div class="fnode"><b>Diff 比对</b><small>vs 昨日基线</small></div>
       <div class="farrow">→</div>
-      <div class="fnode"><b>变化事件</b><small>5 类</small></div>
+      <div class="fnode"><b>变化事件</b><small>10 类</small></div>
       <div class="farrow">→</div>
       <div class="fnode"><b>通知 / 多维表</b><small>dry-run 默认</small></div>
     </div>
@@ -207,7 +207,7 @@
   </section>
 
   <section id="events">
-    <h2><span class="step">呈现 2</span>变化事件：程序真实输出（5 类全覆盖）</h2>
+    <h2><span class="step">呈现 2</span>变化事件：5 对象小样（输出格式与 main.py 一致）</h2>
     <div class="kpi">
       <div class="box"><div class="num" style="color:var(--orange)">1</div><div class="lbl">price_changed</div></div>
       <div class="box"><div class="num" style="color:var(--purple)">1</div><div class="lbl">name_changed</div></div>
@@ -225,13 +225,35 @@
       <tr><td><span class="badge b-new">new</span></td><td class="gid">DEMO-0007</td><td>新出现的对象</td></tr>
     </table>
     </div>
-    <div class="console"><span class="dim">$ python main.py   # dry-run，真实引擎输出格式</span>
+    <div class="console"><span class="dim">$ python main.py   # dry-run，输出格式一致，此处为小样数据</span>
 对比 2026-10-05：变化 <span class="o">5</span> 条 {'removed': 1, 'price_changed': 1, 'name_changed': 1, 'stores_changed': 1, 'new': 1}
   [<span class="r">removed</span>] DEMO-0003 示例项目 0003 对象已不在最新采集结果中
   [<span class="o">price_changed</span>] DEMO-0001 示例项目 0001（升级版） 价格 128.0 → 109.0
   [<span class="b">name_changed</span>] DEMO-0001 示例项目 0001（升级版） 名称变更：示例项目 0001 → 示例项目 0001（升级版）
   [<span class="b">stores_changed</span>] DEMO-0002 示例项目 0002 新增门店：Delta 店、Echo 店；减少门店：无
   [<span class="g">new</span>] DEMO-0007 示例项目 0007 新出现的对象</div>
+    <div class="note">引擎事件类型全集（10 类 + 结构告警），与代码 <code>core/diff.py</code> 一致：</div>
+    <div class="tbl" style="margin-top:10px">
+    <table>
+      <tr><th style="width:190px">类别</th><th>事件类型</th><th>监控内容</th></tr>
+      <tr><td rowspan="5"><span class="badge b-price">数值类</span></td>
+          <td class="gid">price_changed</td><td>价格（数值规范化后比对，<code>"99.0"</code> ≡ <code>99</code> ≡ <code>99.00</code>）</td></tr>
+      <tr><td class="gid">count_changed</td><td>份数 / 库存</td></tr>
+      <tr><td class="gid">unit_price_changed</td><td>单价</td></tr>
+      <tr><td class="gid">discount_changed</td><td>折扣（按 0.1% 精度比对）</td></tr>
+      <tr><td class="gid">store_count_changed</td><td>门店数量</td></tr>
+      <tr><td rowspan="2"><span class="badge b-name">文本类</span></td>
+          <td class="gid">name_changed</td><td>商品名称</td></tr>
+      <tr><td class="gid">status_changed</td><td>上下架状态</td></tr>
+      <tr><td><span class="badge b-stores">集合类</span></td>
+          <td class="gid">stores_changed</td><td>适用门店集合（顺序无关；同数量的一换一也能发现）</td></tr>
+      <tr><td rowspan="2"><span class="badge" style="background:var(--gray-bg);color:var(--sub)">生命周期</span></td>
+          <td class="gid">new</td><td>新出现的对象</td></tr>
+      <tr><td class="gid">removed</td><td>对象已不在最新采集中（前提：本轮采集 complete=true）</td></tr>
+      <tr><td><span class="badge" style="background:var(--gray-bg);color:var(--sub)">结构告警</span></td>
+          <td class="gid">{field}_missing</td><td>字段键意外消失（疑似数据源结构变化，绝不静默跳过）</td></tr>
+    </table>
+    </div>
   </section>
 
   <section id="notify">
@@ -256,17 +278,20 @@
 
   <section id="proof">
     <h2><span class="step">实测</span>60 个对象全链路实跑（真实引擎 · 模拟数据）</h2>
-    <div class="console"><span class="dim"># 用 ExampleAdapter 两个 seed 模拟两天，走完整 save_snapshot → load_latest_snapshot → diff_changes 链路</span>
-[昨日 2026-10-05] 完整性校验: <span class="g">PASS</span>
-[今日 2026-10-06] 完整性校验: <span class="g">PASS</span>
-对比 2026-10-05：变化 <span class="o">118</span> 条 {'price_changed': 60, 'stores_changed': 58}
-  [price_changed] DEMO-0001 示例项目 0001 价格 209.86 → 59.64
-  [stores_changed] DEMO-0001 示例项目 0001 新增门店：Gamma 店；减少门店：Alpha 店、Delta 店
-  ……其余 108 条
+    <div class="console"><span class="dim"># python run_demo.py —— 用 ExampleAdapter 两个 seed 模拟两天，走完整 save_snapshot → load_latest_snapshot → diff_changes 链路</span>
+[昨日 2026-10-05] 完整性校验: <span class="g">PASS</span>（60 个对象）
+[今日 2026-10-06] 完整性校验: <span class="g">PASS</span>（60 个对象）
+对比 2026-10-05：变化 <span class="o">208</span> 条 {'price_changed': 60, 'unit_price_changed': 60, 'stores_changed': 59, 'count_changed': 29}
+  [price_changed] DEMO-0001 示例项目 0001 price 209.86 → 130.96
+  [unit_price_changed] DEMO-0001 示例项目 0001 unit_price 209.86 → 130.96
+  [stores_changed] DEMO-0001 示例项目 0001 新增门店：Echo 店、Gamma 店；减少门店：Alpha 店
+  [price_changed] DEMO-0002 示例项目 0002 price 234.12 → 141.42
+  [count_changed] DEMO-0002 示例项目 0002 count 5 → 1
+  ……其余 203 条
 
-<span class="dim"># 可复现性实测：同 seed 再跑一天（数据源没变）</span>
-对比 2026-10-05：变化 <span class="g">0</span> 条 {}   <span class="dim">← 引擎不制造假新闻</span></div>
-    <div class="note">驱动脚本 <code>run_demo.py</code> 只调用仓库真实引擎，未修改任何核心代码；完整事件数据见 <code>demo_events.json</code>。</div>
+<span class="dim"># 可复现性实测：同 seed 重新实例化再采一天（数据源没变）</span>
+对比 2026-10-06：变化 <span class="g">0</span> 条 {}   <span class="dim">← 引擎不制造假新闻</span></div>
+    <div class="note">驱动脚本 <code>run_demo.py</code>（仓库根目录）只调用仓库真实引擎，未修改任何核心代码；固定 seed，任何人克隆后运行得到与本页一致的输出；快照写入系统临时目录，不触碰仓库数据。</div>
   </section>
 
   <section id="next">
@@ -283,7 +308,7 @@
   </section>
 
   <footer>
-    Biz Change Monitor<span class="sep">·</span>Apache-2.0<span class="sep">·</span>模拟数据演示页，生成于 2026-10-06<span class="sep">·</span>引擎为仓库真实代码，数据全部虚构
+    Biz Change Monitor<span class="sep">·</span>Apache-2.0<span class="sep">·</span>模拟数据演示页，复测于 2026-10-12<span class="sep">·</span>引擎为仓库真实代码，数据全部虚构
   </footer>
 </div>
 </body>
