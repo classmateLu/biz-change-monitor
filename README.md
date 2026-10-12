@@ -1,7 +1,9 @@
-# 商品一变，立刻知道 —— 自动追踪价格、名称、门店与库存变化
+# GooseWatch · 看家大鹅
+
+> **商品一变，立刻知道** —— 自动追踪价格、名称、门店与库存变化
 
 <div align="center">
-  <img src="docs/img/cover.svg" alt="Biz Change Monitor：商品变化监控 · 快照比对 · 内容幂等 · 崩溃自愈" width="100%"/>
+  <img src="docs/img/cover.svg" alt="GooseWatch 看家大鹅：商品变化监控 · 快照比对 · 内容幂等 · 崩溃自愈" width="100%"/>
 </div>
 
 > **人工盯盘对账的替代品**：快照比对 · 内容幂等去重 · 崩溃自愈 · 默认 dry-run，数据不出本机。

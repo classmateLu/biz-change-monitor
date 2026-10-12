@@ -32,9 +32,9 @@
   </g>
 
   <!-- 标题区 -->
-  <text x="64" y="196" font-family="-apple-system,'PingFang SC','Microsoft YaHei','Segoe UI',sans-serif" font-size="42" font-weight="700" fill="#0f172a">Biz Change Monitor</text>
+  <text x="64" y="196" font-family="-apple-system,'PingFang SC','Microsoft YaHei','Segoe UI',sans-serif" font-size="42" font-weight="700" fill="#0f172a">GooseWatch · 看家大鹅</text>
   <text x="64" y="240" font-family="-apple-system,'PingFang SC','Microsoft YaHei','Segoe UI',sans-serif" font-size="26" font-weight="700" fill="#245bdb">商品一变，立刻知道</text>
-  <text x="64" y="272" font-family="-apple-system,'PingFang SC','Microsoft YaHei','Segoe UI',sans-serif" font-size="17" fill="#475569">价格 · 名称 · 门店 · 库存 —— 快照比对，变化立现，绝不静默</text>
+  <text x="64" y="272" font-family="-apple-system,'PingFang SC','Microsoft YaHei','Segoe UI',sans-serif" font-size="17" fill="#475569">价格 · 名称 · 门店 · 库存 —— 看家大鹅，有变化就叫</text>
 
   <!-- 特性胶囊 -->
   <g font-family="-apple-system,'PingFang SC','Microsoft YaHei','Segoe UI',sans-serif" font-size="14" font-weight="600">
