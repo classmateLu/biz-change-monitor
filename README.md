@@ -9,13 +9,13 @@
 > **人工盯盘对账的替代品**：快照比对 · 内容幂等去重 · 崩溃自愈 · 默认 dry-run，数据不出本机。
 
 <p align="center">
-  <a href="https://classmatelu.github.io/biz-change-monitor/demo.html">📺 在线演示（10 秒看效果，数据全部虚构）</a> ·
+  <a href="https://classmatelu.github.io/goosewatch/demo.html">📺 在线演示（10 秒看效果，数据全部虚构）</a> ·
   <a href="#快速开始">快速开始</a> ·
   <a href="#它能发现哪些变化">能发现哪些变化</a> ·
   <a href="#可靠性说明如实声明">可靠性说明</a>
 </p>
 
-![CI](https://github.com/classmateLu/biz-change-monitor/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/classmateLu/goosewatch/actions/workflows/ci.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)
 
@@ -130,8 +130,8 @@ flowchart LR
 - 示例适配器带 `is_example` 标记，被硬性禁止写入真实表
 
 ```bash
-git clone https://github.com/classmateLu/biz-change-monitor.git
-cd biz-change-monitor
+git clone https://github.com/classmateLu/goosewatch.git
+cd goosewatch
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
@@ -209,7 +209,7 @@ pytest tests/                         # 或一键全部
 ## 架构
 
 ```
-biz-change-monitor/
+goosewatch/
 ├── core/            # 监控引擎
 │   ├── models.py    #   数据模型与数值规范化
 │   ├── diff.py      #   变化检测（纯函数，无 IO）

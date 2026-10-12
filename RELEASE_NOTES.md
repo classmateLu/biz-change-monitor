@@ -1,4 +1,4 @@
-# biz-change-monitor v0.1.0 (Experimental)
+# goosewatch v0.1.0 (Experimental)
 
 首个公开发布版本：通用业务对象历史变化监控引擎。
 
@@ -15,8 +15,8 @@
 ## 快速开始
 
 ```bash
-git clone https://github.com/YOUR_USER/biz-change-monitor.git
-cd biz-change-monitor
+git clone https://github.com/YOUR_USER/goosewatch.git
+cd goosewatch
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 python tests/test_diff.py   # Diff 引擎 12 项（另有钉钉同步安全 37 项 + 主流程安全 25 项，共 74 项）
