@@ -36,6 +36,7 @@ import json
 import shutil
 import sys
 import tempfile
+import time
 import unittest.mock as mock
 from datetime import datetime
 from pathlib import Path
@@ -271,6 +272,12 @@ def scenario_f4_latest_failure(tmp: Path):
     base = _items({"DEMO-A": 10, "DEMO-B": 20, "DEMO-C": 30})
     checks.append((_run_main(tmp, base) == 0, "F4 前置：基线轮 committed"))
     rid_a, _ = load_latest_valid(tmp)
+    # 稳定性修复（CI 3.13 实测踩坑）：observed_at/run_id 时间戳精确到秒，
+    # 两轮背靠背挤进同一秒时，回退扫描的次键（run_id 的随机 UUID 段）
+    # 会把"选哪轮当基线"变成抛硬币。这里强制故障轮的秒级时间戳严格
+    # 大于基线轮，使 F4 回退断言恢复确定性。（引擎侧同秒多轮的次序
+    # 问题见测试注释，属极端边缘场景，不在本修引入引擎改动。）
+    time.sleep(1.1)
     changed = _items({"DEMO-A": 99, "DEMO-B": 20, "DEMO-C": 30})
 
     real_replace = __import__("os").replace
