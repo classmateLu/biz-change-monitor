@@ -1,12 +1,40 @@
-# 别再手动对账：自动追踪商品价格、优惠与门店变化
+# 商品一变，立刻知道 —— 自动追踪价格、名称、门店与库存变化
 
-> 一个开源的商品信息变化监控工具：在**你自己的授权范围内**持续采集业务数据，与历史快照比对，把「什么变了」整理成**可追溯的变化记录**，减少人工核对与对账工作。
+<div align="center">
+  <img src="docs/img/cover.svg" alt="Biz Change Monitor：商品变化监控 · 快照比对 · 内容幂等 · 崩溃自愈" width="100%"/>
+</div>
+
+> **人工盯盘对账的替代品**：快照比对 · 内容幂等去重 · 崩溃自愈 · 默认 dry-run，数据不出本机。
+
+<p align="center">
+  <a href="https://classmatelu.github.io/biz-change-monitor/demo.html">📺 在线演示（10 秒看效果，数据全部虚构）</a> ·
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#它能发现哪些变化">能发现哪些变化</a> ·
+  <a href="#可靠性说明如实声明">可靠性说明</a>
+</p>
 
 ![CI](https://github.com/classmateLu/biz-change-monitor/actions/workflows/ci.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)
 
+> ⚠️ **免责声明**：本项目仅供技术学习与工程实践使用，不构成商业产品。请仅在**自己有权访问的数据**范围内使用，使用前自行确认目标平台的服务条款与适用法律（详见[安全与合规声明](#安全与合规声明)）。
+
 ---
+
+## 10 秒看到引擎在工作（真实输出 · 数据虚构）
+
+```text
+$ python run_demo.py
+[昨日 2026-10-05] 完整性校验: PASS（60 个对象）
+[今日 2026-10-06] 完整性校验: PASS（60 个对象）
+对比 2026-10-05：变化 208 条 {'price_changed': 60, 'unit_price_changed': 60,
+                              'stores_changed': 59, 'count_changed': 29}
+
+# 同 seed 复跑一天（数据源没变）
+对比 2026-10-06：变化 0 条 {}        ← 引擎不制造假新闻
+```
+
+任何人克隆仓库后运行 `python run_demo.py`，都会得到与上面逐字一致的输出——这是本项目的信任基础：**不演示无法复现的东西**。
 
 ## 这是什么
 
@@ -21,8 +49,6 @@
 **它做什么**：采集 → 规范化 → 与历史有效快照比对 → 生成变化事件 → 持久化 → （可选）同步到钉钉多维表 / 群通知。
 
 **它不做什么**：不绕过任何平台的登录、权限或安全机制；不内置任何特定平台的正式适配器；不实时推送（按配置的周期轮询）。
-
-> 📺 **交互式演示**（本页所有数据均为虚构）：[在线查看](https://classmatelu.github.io/biz-change-monitor/demo.html) ｜ 源文件 [docs/demo.html](docs/demo.html)
 
 ## 它能发现哪些变化
 
